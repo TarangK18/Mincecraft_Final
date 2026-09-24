@@ -1,0 +1,14 @@
+# Edited on Windows, run on the Pi. A shell script checked out with CRLF line
+# endings fails on the Pi with "$'\r': command not found", so these are
+# pinned to LF whatever git's autocrlf setting is on the machine that commits.
+*.sh       text eol=lf
+*.py       text eol=lf
+*.desktop  text eol=lf
+*.qss      text eol=lf
+*.json     text eol=lf
+
+# The Windows launcher wants CRLF.
+*.bat      text eol=crlf
+
+*.png      binary
+*.xlsx     binary
