@@ -3,8 +3,12 @@
 
   python3 xlsx_to_recipes.py DOKI-Recipes.xlsx [recipes.json]
 
-The workbook holds grams per 1 kg of meat; recipes.json holds a percentage of
-the base weight. 73 g/kg is 7.3 %.
+Meat recipes: the workbook holds grams per 1 kg of meat; recipes.json holds a
+percentage of the base weight. 73 g/kg is 7.3 %.
+
+Fixed batches (C3 = "Fixed batch"): the workbook holds grams per batch, and so
+does recipes.json, marked "batch": "fixed". No conversion — the numbers are
+the batch.
 
 Refuses to write a recipe that still has an unweighable ingredient or an
 untouched example row, so a sheet nobody has finished cannot quietly reach the
@@ -27,16 +31,20 @@ EXAMPLE = ("Salt", 7.5)      # the grey row seeded into each blank sheet
 def read_sheet(ws):
     """(product_dict, [problems]) for one recipe sheet."""
     problems = []
+    # Row 3 says what the weights are measured against. A sheet from before
+    # row 3 existed has nothing there, and was always per kg of meat.
+    fixed = str(ws["C3"].value or "").strip().lower().startswith("fixed")
     product_id = (ws["C5"].value or "").strip()
-    bases = [b.strip() for b in str(ws["F5"].value or "").split(",") if b.strip()]
+    bases = [b.strip() for b in str(ws["F5"].value or "").split(",")
+             if b.strip() and b.strip() != "—"]
     if not product_id:
         problems.append("no Product ID in C5")
-    if not bases:
+    if not bases and not fixed:
         problems.append("no bases listed in F5")
 
-    meat = (ws["C7"].value or "").strip() or None
-    flour = (ws["C6"].value or "").strip()
-    water = (ws["F6"].value or "").strip()
+    meat = None if fixed else ((ws["C7"].value or "").strip() or None)
+    flour = "" if fixed else (ws["C6"].value or "").strip()
+    water = "" if fixed else (ws["F6"].value or "").strip()
     if bool(flour) != bool(water):
         problems.append("names a flour or a water ingredient but not both — "
                         "water cannot be derived from the daily ratio")
@@ -53,16 +61,33 @@ def read_sheet(ws):
         if grams is None:
             problems.append(f"row {r}: '{name}' has no weight")
             continue
-        if str(where).startswith("NEITHER"):
-            problems.append(f"row {r}: '{name}' — {where}")
+        try:
+            grams = float(grams)
+        except (TypeError, ValueError):
+            problems.append(f"row {r}: '{name}' weight {grams!r} is not a number")
+            continue
+        if grams < 0:
+            problems.append(f"row {r}: '{name}' has a negative weight")
             continue
         if name.lower() in seen:
             problems.append(f"row {r}: '{name}' appears twice")
             continue
         seen.add(name.lower())
-        ingredients.append([name, round(float(grams) / 10.0, 4)])
+        if grams == 0:
+            # Listed for reference, not weighed — the station shows it under
+            # "listed but not weighed". Checked before the Weigh-on column,
+            # which in a workbook saved before this fix still says
+            # "NEITHER — zero" and used to get the whole recipe refused.
+            ingredients.append([name, 0.0])
+            continue
+        if str(where).startswith("NEITHER"):
+            problems.append(f"row {r}: '{name}' — {where}")
+            continue
+        # g per 1 kg of meat -> % of meat is /10; a fixed batch is already grams.
+        qty = grams if fixed else round(grams / 10.0, 4)
+        ingredients.append([name, qty])
 
-    if not ingredients:
+    if not any(q > 0 for _, q in ingredients):
         problems.append("no ingredients filled in")
     elif len(ingredients) == 1 and ingredients[0][0] == EXAMPLE[0] \
             and abs(ingredients[0][1] - EXAMPLE[1] / 10.0) < 1e-9:
@@ -76,6 +101,8 @@ def read_sheet(ws):
 
     product = {"id": product_id, "name": ws.title, "meat": meat,
                "ingredients": ingredients}
+    if fixed:
+        product["batch"] = "fixed"
     if flour and water:
         product["flour_ingredient"] = flour
         product["water_ingredient"] = water
@@ -125,10 +152,14 @@ def main(argv=None):
 
     print(f"\nready: {len(ready)} recipe(s)")
     for p in ready:
-        total = sum(pct for _, pct in p["ingredients"])
+        total = sum(q for _, q in p["ingredients"])
+        if p.get("batch") == "fixed":
+            print(f"    {p['name']:<20} {len(p['ingredients']):>2} ingredients, "
+                  f"fixed batch of {total:,.0f} g, no meat")
+            continue
         gate = (f"  water = ratio x {p['flour_ingredient']}"
                 if p.get("flour_ingredient") else "  not water-gated")
-        print(f"    {p['name']:<14} {len(p['ingredients']):>2} ingredients, "
+        print(f"    {p['name']:<20} {len(p['ingredients']):>2} ingredients, "
               f"{total:.3f} % of base ({total * 10:.2f} g per kg of meat)"
               f"{gate}")
     if added:

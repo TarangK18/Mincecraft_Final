@@ -1,4 +1,5 @@
-"""The seven jerky recipes plus the vinegar bath, as supplied.
+"""The recipes as supplied: seven jerky recipes and the vinegar bath, which
+scale with the meat, and FIXED_BATCHES at the bottom, which do not.
 
 Quantities are GRAMS PER 10 KG OF MEAT, exactly as written on the sheets —
 spellings included, at Tarang's instruction. An ingredient listed twice is two
@@ -71,6 +72,23 @@ RECIPES = {
 }
 
 BATCH_G = 10000.0     # the basis every quantity above is written against
+
+
+# Fixed batches: no meat, nothing weighed first. The quantities ARE the batch,
+# in grams — a standard size, made the same way every time. Kept apart from
+# RECIPES on purpose: the two hold numbers in different units, and a dict that
+# mixed them would need every reader to remember which was which.
+#
+# Spellings: three typos in what was sent were corrected at Tarang's request
+# (oninion -> onion, tamarid -> tamarind, paparica -> paprika), so the names
+# match the same spices in the jerky recipes and stock totals do not split.
+FIXED_BATCHES = {
+"Piri Piri Masala": [
+    ("chilli flakes", 300), ("salt", 466), ("sugar", 350),
+    ("garlic powder", 164), ("onion powder", 164), ("pepper", 116),
+    ("tamarind powder", 116), ("yeast extract", 116), ("citric acid", 60),
+    ("paprika", 152)],
+}
 
 
 def as_percent(grams_per_10kg):

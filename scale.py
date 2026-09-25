@@ -382,6 +382,11 @@ class BatchLog:
 
 MAIN, SMALL = "main", "small"
 
+# A product with "batch": "fixed" is made in one standard size with no meat
+# weighed first; its ingredient quantities are grams per batch. Without the
+# key, quantities are a percentage of the meat, as for every jerky recipe.
+FIXED_BATCH = "fixed"
+
 
 class ScaleSpec:
     """One physical scale."""
@@ -606,6 +611,34 @@ class Config:
         p = self.product(product_id)
         return bool(p.get("draft")) or not self.active_ingredients(product_id)
 
+    # -- fixed batches: no meat, the quantities are the batch -----------------
+
+    def is_fixed_batch(self, product_id):
+        """True for a product made in one standard size with nothing weighed
+        first — a spice blend, not a marinade. Its quantities are grams per
+        batch, not a percentage of anything."""
+        return self.product(product_id).get("batch") == FIXED_BATCH
+
+    def batch_total_g(self, product_id):
+        """Everything that goes into one fixed batch, in grams. None for a
+        product that scales with the meat — its size depends on the meat."""
+        if not self.is_fixed_batch(product_id):
+            return None
+        return sum(g for _, g in self.active_ingredients(product_id))
+
+    def targets_for(self, product_id, base_g=None):
+        """[(ingredient, target g)] for a batch.
+
+        The one place that knows the two kinds apart: a fixed batch's
+        quantities are already grams and `base_g` is ignored; a meat recipe's
+        are percentages of `base_g`. Water from the daily ratio is the panel's
+        business, not this — it is not a recipe quantity at all.
+        """
+        if self.is_fixed_batch(product_id):
+            return [(n, float(g)) for n, g in self.active_ingredients(product_id)]
+        return [(n, base_g * pct / 100.0)
+                for n, pct in self.active_ingredients(product_id)]
+
     def min_base_for(self, product_id):
         """Smallest batch of meat this product can actually be made in.
 
@@ -613,7 +646,11 @@ class Config:
         800 g batch before it reaches two divisions of the bench scale, so a
         500 g Teriyaki batch is not a tolerance problem, it is unmakeable.
         Better to say so at the scale than to fail at recipe review.
+
+        A fixed batch weighs no meat, so it has no minimum: 0.
         """
+        if self.is_fixed_batch(product_id):
+            return 0.0
         floor = self.min_base_g
         if self.small is None:
             return floor
@@ -673,6 +710,22 @@ class Config:
         for p in self.products:
             names = {n for n, _ in p["ingredients"]}
             flour, water = p.get("flour_ingredient"), p.get("water_ingredient")
+            batch = p.get("batch")
+            if batch not in (None, FIXED_BATCH):
+                # An unknown value would silently fall back to "percent of
+                # meat" and turn 300 g of chilli into 3 % of whatever is on
+                # the scale. Refuse it rather than guess the unit.
+                problems.append(f"{p['id']}: unknown batch type {batch!r} — "
+                                f"use \"{FIXED_BATCH}\" or leave it out")
+            if batch == FIXED_BATCH:
+                if flour or water:
+                    problems.append(
+                        f"{p['id']}: a fixed batch cannot take its water from "
+                        f"the daily ratio — only meat recipes support that")
+                if p.get("meat"):
+                    problems.append(
+                        f"{p['id']}: a fixed batch weighs no meat, but names "
+                        f"'{p['meat']}'")
             if bool(flour) != bool(water):
                 problems.append(
                     f"{p['id']}: names {'a flour' if flour else 'a water'} "

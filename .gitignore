@@ -1,0 +1,17 @@
+# Written by the station while it runs, inside this folder. These are
+# production records, not source — and this repo is public.
+batches.jsonl
+daily.json
+consumption.xlsx
+
+# Left behind if a test run is interrupted
+_test_*.jsonl
+_test_daily.json
+screenshots/_layout_*
+
+# Excel's lock file, created whenever a workbook is open
+~$*
+
+# Python
+__pycache__/
+*.pyc

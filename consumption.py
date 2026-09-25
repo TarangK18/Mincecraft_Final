@@ -60,6 +60,14 @@ def header(ws, row, labels, widths=None):
     ws.freeze_panes = ws.cell(row=row + 1, column=1)
 
 
+def base_label(b):
+    """The meat, or 'fixed batch' for a product that weighs none. A blank
+    here would read as a missing value rather than as 'there is no meat'."""
+    if b.get("batch") == "fixed":
+        return "fixed batch"
+    return b.get("base")
+
+
 def build_consumption(wb, batches):
     ws = wb.create_sheet("Consumption")
     ws["A1"] = "Material used, per ingredient per batch"
@@ -88,7 +96,7 @@ def build_consumption(wb, batches):
             # An assumed figure is the target, not a measurement — inventory
             # must be able to tell the two apart.
             measured = "assumed" if s.get("assumed") else "measured"
-            cells = [day, b.get("batch_no"), b.get("product"), b.get("base"),
+            cells = [day, b.get("batch_no"), b.get("product"), base_label(b),
                      b.get("base_weight_g"), s.get("name"), target, actual, dev,
                      s.get("weighed_on"), measured, vtext, b.get("water_ratio")]
             for i, v in enumerate(cells, start=1):
@@ -126,7 +134,8 @@ def build_batches(wb, batches):
         rec = b.get("reconciliation") or {}
         ok = rec.get("ok")
         cells = [b.get("production_day") or (b.get("logged_at") or "")[:10],
-                 b.get("batch_no"), b.get("product"), b.get("base"), base,
+                 b.get("batch_no"), b.get("product"), base_label(b),
+                 b.get("base_weight_g"),
                  len(steps), added, base + added, b.get("water_ratio"),
                  "yes" if b.get("rebalanced") else "",
                  {True: "yes", False: "NO"}.get(ok, "n/a"),

@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Build DOKI-Recipes.xlsx — one sheet per recipe, weights in g per 1 kg of meat.
+"""Build DOKI-Recipes.xlsx — one sheet per recipe.
+
+Meat recipes are in grams per 1 kg of meat. Fixed batches (a spice blend made
+in one standard size, no meat) are in grams per batch, on a sheet laid out the
+same way but marked "Fixed batch" in C3, which is how xlsx_to_recipes.py tells
+them apart.
 
 Every derived column uses the same rules the station firmware uses, so what
 the sheet says about tolerance and scale routing is what the panel will do.
+The scale settings are read from recipes.json rather than typed here, so the
+workbook and the station cannot drift apart.
 """
+
+import json
+import os
 
 import openpyxl
 from openpyxl.formatting.rule import FormulaRule
@@ -35,9 +45,43 @@ TOTAL_ROW = 50
 
 # The recipes as supplied, in grams per 10 kg of meat. The sheets below work in
 # grams per 1 kg, so each is divided by ten on the way in.
+from recipe_data import FIXED_BATCHES
 from recipe_data import RECIPES as SUPPLIED
 
-RECIPES = list(SUPPLIED)
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Every recipe sheet, meat recipes first, fixed batches after.
+RECIPES = list(SUPPLIED) + list(FIXED_BATCHES)
+
+MARK_MEAT = "Per 1 kg of meat"
+MARK_FIXED = "Fixed batch"      # C3 on a fixed-batch sheet; the converter keys on it
+
+
+def station_settings():
+    """The station's own scale and tolerance settings, from recipes.json.
+
+    This sheet used to hard-code them, and fell behind: it still said the
+    floor scale reads in 5 g steps after the station moved to 1 g, so its
+    Weigh-on column disagreed with what the panel actually does.
+    """
+    with open(os.path.join(HERE, "recipes.json"), encoding="utf-8") as fh:
+        data = json.load(fh)
+    main, small = data["scales"]["main"], data["scales"]["small"]
+    return {
+        "percent": data["tolerance"]["percent"],
+        "main_name": main.get("name", "Floor scale"),
+        "main_div": main["division_g"],
+        "main_cap": main.get("capacity_g", 50000),
+        "main_usable": main.get("usable_g", main.get("capacity_g", 50000)),
+        "small_name": small.get("name", "Bench scale"),
+        "small_div": small["division_g"],
+        "small_cap": small.get("capacity_g", 3000),
+        "small_usable": small.get("usable_g", small.get("capacity_g", 3000)),
+        "crossover": data["scales"].get("crossover_g"),
+    }
+
+
+S = station_settings()
 
 # Which animal each product is made from. The operator is not asked — the
 # product implies it. Blank means not decided yet.
@@ -69,6 +113,7 @@ INGREDIENTS = sorted({
     "Mustard seed", "Fennel powder", "Cardamom powder", "Clove powder",
     "Cinnamon powder", "Ginger paste", "Garlic paste", "Lemon juice",
     "Vinegar", "Sugar", "Water",
+    "Citric acid", "Paprika", "Tamarind powder", "Chilli flakes", "Pepper",
 })
 
 # Cross-sheet references into Settings.
@@ -105,24 +150,24 @@ def sheet_title(ws, title, subtitle):
 def build_settings(wb):
     ws = wb.create_sheet("Settings")
     sheet_title(ws, "Settings",
-                "These drive every recipe sheet. Change a number here and all "
-                "seven recipes re-evaluate.")
+                "These drive every recipe sheet, and mirror recipes.json — the "
+                "station reads that file, not this one.")
 
     rows = [
-        (4, "Tolerance (percent of target)", 0.02, "0.0%",
+        (4, "Tolerance (percent of target)", S["percent"], "0.0%",
          "What the recipe asks for. The station uses this too."),
         (5, "", None, None, None),
-        (6, "MAIN SCALE — name", "Floor scale", None, ""),
-        (7, "  division (g)", 5, "0.0",
-         "Smallest step it reads. From the RS232 frame resolution."),
-        (8, "  capacity (g)", 50000, "#,##0", ""),
-        (9, "  usable (g)", 50000, "#,##0", "Capacity less the tub's tare."),
+        (6, "MAIN SCALE — name", S["main_name"], None, ""),
+        (7, "  division (g)", S["main_div"], "0.0",
+         "Smallest step it reads. Copied from recipes.json — change it there."),
+        (8, "  capacity (g)", S["main_cap"], "#,##0", ""),
+        (9, "  usable (g)", S["main_usable"], "#,##0", "Capacity less the tub's tare."),
         (10, "", None, None, None),
-        (11, "SMALL SCALE — name", "Bench scale", None, ""),
-        (12, "  division (g)", 0.1, "0.00",
+        (11, "SMALL SCALE — name", S["small_name"], None, ""),
+        (12, "  division (g)", S["small_div"], "0.00",
          "SPEC NOT CONFIRMED — check the label on the scale."),
-        (13, "  capacity (g)", 3000, "#,##0", "SPEC NOT CONFIRMED."),
-        (14, "  usable (g)", 2000, "#,##0",
+        (13, "  capacity (g)", S["small_cap"], "#,##0", "SPEC NOT CONFIRMED."),
+        (14, "  usable (g)", S["small_usable"], "#,##0",
          "Capacity less the tare of the container you weigh into."),
     ]
     for r, labelled, value, fmt, note in rows:
@@ -149,7 +194,7 @@ def build_settings(wb):
     ws["C17"].font = NOTE_FONT
 
     ws["A18"] = "Crossover — override"
-    ws["B18"] = None
+    ws["B18"] = S["crossover"]
     ws["B18"].fill = INPUT_FILL
     ws["B18"].font = BLUE
     ws["B18"].border = BOX
@@ -216,21 +261,53 @@ def build_ingredients(wb):
 
 # ------------------------------------------------------------------ recipes
 
-def build_recipe(wb, name, data=None, example=False):
+def batch_type_row(ws, mark, note):
+    """Row 3: what the quantities on this sheet are measured against.
+
+    Stated on every sheet, in the same cell, so nobody has to infer the unit
+    from the sheet's name — and so xlsx_to_recipes.py reads it rather than
+    guessing. 300 read as grams is chilli flakes; read as a percentage of the
+    meat it is three times the meat's own weight.
+    """
+    ws.merge_cells("A3:B3")
+    ws["A3"] = "Batch type"
+    ws["A3"].font = BOLD
+    ws["A3"].alignment = Alignment(horizontal="right")
+    ws["C3"] = mark
+    ws["C3"].font = BOLD
+    ws["C3"].border = BOX
+    ws.merge_cells("D3:H3")
+    ws["D3"] = note
+    ws["D3"].font = NOTE_FONT
+
+
+def build_recipe(wb, name, data=None, example=False, fixed=False):
     ws = wb.create_sheet(name)
-    sheet_title(ws, name,
-                "Type in the shaded cells only. Weights are GRAMS PER 1 KG OF "
-                "MEAT. Everything to the right is calculated.")
+    if fixed:
+        sheet_title(ws, name,
+                    "Type in the shaded cells only. Weights are GRAMS PER BATCH "
+                    "— one standard batch, no meat. Everything to the right is "
+                    "calculated.")
+        batch_type_row(ws, MARK_FIXED, "No meat is weighed. The station goes "
+                       "straight to recipe review with these exact weights.")
+    else:
+        sheet_title(ws, name,
+                    "Type in the shaded cells only. Weights are GRAMS PER 1 KG "
+                    "OF MEAT. Everything to the right is calculated.")
+        batch_type_row(ws, MARK_MEAT, "Quantities scale with the meat weighed "
+                       "at the station.")
 
     # Labels merged across A:B so they are not clipped by the input beside them.
     ws.merge_cells("A4:B4")
-    ws["A4"] = "Batch base weight (g)"
+    ws["A4"] = "Batch size (g)" if fixed else "Batch base weight (g)"
     ws["A4"].font = BOLD
     ws["A4"].alignment = Alignment(horizontal="right")
-    ws["C4"] = 3200
+    ws["C4"] = f"=C{TOTAL_ROW}" if fixed else 3200
     ws["C4"].number_format = "#,##0"
     ws.merge_cells("D4:H4")
-    ws["D4"] = ("A typical batch. Only the Target / Weigh-on / Tolerance columns "
+    ws["D4"] = ("The whole batch: the sum of the weights below. Change it by "
+                "changing them." if fixed else
+                "A typical batch. Only the Target / Weigh-on / Tolerance columns "
                 "use it — the station recomputes them from the meat it actually "
                 "weighs.")
     ws["D4"].font = NOTE_FONT
@@ -246,7 +323,7 @@ def build_recipe(wb, name, data=None, example=False):
     ws["D5"].font = BOLD
     ws["D5"].alignment = Alignment(horizontal="right")
     ws.merge_cells("F5:H5")
-    ws["F5"] = "chicken, pork, beef, mutton, fish"
+    ws["F5"] = "—" if fixed else "chicken, pork, beef, mutton, fish"
 
     # Blank by default: naming a flour that is not in the sheet would fail the
     # check below, and none of these recipes is known to use one yet.
@@ -255,12 +332,14 @@ def build_recipe(wb, name, data=None, example=False):
     ws["A7"] = "Meat"
     ws["A7"].font = BOLD
     ws["A7"].alignment = Alignment(horizontal="right")
-    ws["C7"] = MEAT.get(name, "")
-    ws["C7"].font = BLUE
-    ws["C7"].fill = INPUT_FILL
+    ws["C7"] = "—" if fixed else MEAT.get(name, "")
+    ws["C7"].font = BLACK if fixed else BLUE
+    if not fixed:
+        ws["C7"].fill = INPUT_FILL
     ws["C7"].border = BOX
     ws.merge_cells("D7:H7")
-    ws["D7"] = ("Which animal this product is made from. The operator is not "
+    ws["D7"] = ("A fixed batch: no meat goes on the scale." if fixed else
+                "Which animal this product is made from. The operator is not "
                 "asked — the product implies it. Leave blank if undecided.")
     ws["D7"].font = NOTE_FONT
 
@@ -276,9 +355,14 @@ def build_recipe(wb, name, data=None, example=False):
     ws.merge_cells("F6:H6")
     ws["F6"] = water
 
-    for ref in ("C4", "C5", "F5", "C6", "F6"):
+    # A fixed batch's size is a formula and it has no bases or water ratio,
+    # so only its Product ID is typed.
+    for ref in (("C5",) if fixed else ("C4", "C5", "F5", "C6", "F6")):
         ws[ref].font = BLUE
         ws[ref].fill = INPUT_FILL
+        ws[ref].border = BOX
+    for ref in (("C4", "F5", "C6", "F6") if fixed else ()):
+        ws[ref].font = BLACK
         ws[ref].border = BOX
     ws["C4"].alignment = Alignment(horizontal="right")
 
@@ -303,8 +387,10 @@ def build_recipe(wb, name, data=None, example=False):
         fill=PatternFill("solid", fgColor="FBD5D5"),
         font=Font(name=FONT, size=10, bold=True, color="9C0006")))
 
-    headers = ["#", "Ingredient", "g per 1 kg meat", "% of meat",
-               f"Target in this batch", "Weigh on", "Tolerance ±", "Note"]
+    headers = (["#", "Ingredient", "g per batch", "% of batch",
+                "Target (g)", "Weigh on", "Tolerance ±", "Note"] if fixed else
+               ["#", "Ingredient", "g per 1 kg meat", "% of meat",
+                "Target in this batch", "Weigh on", "Tolerance ±", "Note"])
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=8, column=i, value=h)
         c.font = HEAD_FONT
@@ -333,21 +419,28 @@ def build_recipe(wb, name, data=None, example=False):
             b.fill = c.fill = EXAMPLE_FILL
 
         # --- derived
-        pct = ws.cell(row=r, column=4, value=f'=IF($B{r}="","",$C{r}/1000)')
+        if fixed:
+            # Share of the batch; the target is the weight itself.
+            pct = ws.cell(row=r, column=4,
+                          value=f'=IF(OR($B{r}="",$C$4=0),"",$C{r}/$C$4)')
+            tgt = ws.cell(row=r, column=5, value=f'=IF($B{r}="","",$C{r})')
+        else:
+            pct = ws.cell(row=r, column=4, value=f'=IF($B{r}="","",$C{r}/1000)')
+            tgt = ws.cell(row=r, column=5, value=f'=IF($B{r}="","",$D{r}*$C$4)')
         pct.number_format = "0.000%"
 
-        tgt = ws.cell(row=r, column=5, value=f'=IF($B{r}="","",$D{r}*$C$4)')
         tgt.number_format = "#,##0.00"
 
         # Same rule as the firmware: the main scale only holds the percentage
         # once two of its divisions fit inside it.
         ws.cell(row=r, column=6, value=(
             f'=IF($B{r}="","",'
-            f'IF($E{r}<=0,"NEITHER — zero",'
+            f'IF($C{r}=0,"Listed — not weighed",'
+            f'IF($E{r}<0,"NEITHER — negative weight",'
             f'IF($E{r}>={CROSSOVER},{MAIN_NAME},'
             f'IF($E{r}>{SMALL_USABLE},"NEITHER — over bench capacity",'
             f'IF($E{r}>=2*{SMALL_DIV},{SMALL_NAME},'
-            f'"NEITHER — under bench resolution")))))'))
+            f'"NEITHER — under bench resolution"))))))'))
 
         tol = ws.cell(row=r, column=7, value=(
             f'=IF($B{r}="","",'
@@ -357,10 +450,12 @@ def build_recipe(wb, name, data=None, example=False):
 
         ws.cell(row=r, column=8, value=(
             f'=IF($B{r}="","",'
+            f'IF(LEFT($F{r},6)="Listed","Quantity 0: shown on the station as a '
+            f'reminder, not weighed. Give it a weight to weigh it.",'
             f'IF(LEFT($F{r},7)="NEITHER","Cannot be weighed — split it, premix '
             f'it, or raise the batch size",'
             f'IF($G{r}>{PCT}*$E{r}+0.0001,'
-            f'"Held to the scale\'s resolution, not "&TEXT({PCT},"0%"),"")))'))
+            f'"Held to the scale\'s resolution, not "&TEXT({PCT},"0%"),""))))'))
 
         style_row(ws, r, range(1, 9))
         ws.cell(row=r, column=1).font = BLACK
@@ -389,8 +484,10 @@ def build_recipe(wb, name, data=None, example=False):
         ws.cell(row=TOTAL_ROW, column=col).font = BOLD
         ws.cell(row=TOTAL_ROW, column=col).border = BOX
 
-    ws.cell(row=TOTAL_ROW + 1, column=2, value="Batch total with meat (g)").font = BOLD
-    bt = ws.cell(row=TOTAL_ROW + 1, column=5, value=f"=$C$4+E{TOTAL_ROW}")
+    ws.cell(row=TOTAL_ROW + 1, column=2,
+            value="Batch total (g)" if fixed else "Batch total with meat (g)").font = BOLD
+    bt = ws.cell(row=TOTAL_ROW + 1, column=5,
+                 value=f"=E{TOTAL_ROW}" if fixed else f"=$C$4+E{TOTAL_ROW}")
     bt.number_format = "#,##0.00"
     bt.font = BOLD
 
@@ -437,8 +534,9 @@ def build_summary(wb):
     ws = wb.create_sheet("Summary")
     sheet_title(ws, "All recipes",
                 "Rolls up every recipe sheet. Nothing to type here.")
-    headers = ["Recipe", "Ingredients", "Total g per 1 kg meat", "Total % of meat",
-               "On floor scale", "On bench scale", "Cannot be weighed"]
+    headers = ["Recipe", "Batch type", "Ingredients", "Total (g)",
+               "Measured against", "On floor scale", "On bench scale",
+               "Cannot be weighed"]
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=4, column=i, value=h)
         c.font = HEAD_FONT
@@ -449,21 +547,25 @@ def build_summary(wb):
     for i, name in enumerate(RECIPES):
         r = 5 + i
         q = f"'{name}'"
+        fixed = name in FIXED_BATCHES
         ws.cell(row=r, column=1, value=name).font = BOLD
-        ws.cell(row=r, column=2,
+        ws.cell(row=r, column=2, value=f"={q}!$C$3")
+        ws.cell(row=r, column=3,
                 value=f"=COUNTA({q}!$B${FIRST_ROW}:$B${LAST_ROW})")
-        ws.cell(row=r, column=3, value=f"={q}!$C${TOTAL_ROW}").number_format = "#,##0.00"
-        ws.cell(row=r, column=4, value=f"={q}!$D${TOTAL_ROW}").number_format = "0.000%"
-        ws.cell(row=r, column=5, value=(
-            f"=COUNTIF({q}!$F${FIRST_ROW}:$F${LAST_ROW},{MAIN_NAME})"))
+        ws.cell(row=r, column=4, value=f"={q}!$C${TOTAL_ROW}").number_format = "#,##0.00"
+        ws.cell(row=r, column=5,
+                value="one batch" if fixed else "1 kg of meat")
         ws.cell(row=r, column=6, value=(
-            f"=COUNTIF({q}!$F${FIRST_ROW}:$F${LAST_ROW},{SMALL_NAME})"))
+            f"=COUNTIF({q}!$F${FIRST_ROW}:$F${LAST_ROW},{MAIN_NAME})"))
         ws.cell(row=r, column=7, value=(
+            f"=COUNTIF({q}!$F${FIRST_ROW}:$F${LAST_ROW},{SMALL_NAME})"))
+        ws.cell(row=r, column=8, value=(
             f'=COUNTIF({q}!$F${FIRST_ROW}:$F${LAST_ROW},"NEITHER*")'))
-        style_row(ws, r, range(1, 8))
+        style_row(ws, r, range(1, 9))
         ws.cell(row=r, column=1).font = BOLD
 
-    widths = {"A": 18, "B": 13, "C": 20, "D": 16, "E": 15, "F": 15, "G": 18}
+    widths = {"A": 20, "B": 17, "C": 12, "D": 12, "E": 17, "F": 14, "G": 14,
+              "H": 17}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
     ws.page_setup.orientation = "landscape"
@@ -478,15 +580,26 @@ def build_summary(wb):
 def build_instructions(wb):
     ws = wb.create_sheet("Instructions", 0)
     sheet_title(ws, "DOKI recipe workbook",
-                "One sheet per recipe. Weights are grams per 1 kg of meat.")
+                "One sheet per recipe. Row 3 of each sheet says what its "
+                "weights are measured against.")
 
+    crossover = S["crossover"] or 2 * S["main_div"] / S["percent"]
+    fixed_names = ", ".join(FIXED_BATCHES) or "none yet"
     lines = [
         ("How to use", True),
         ("Open the sheet for a recipe. In the shaded columns type the ingredient "
-         "name and how many grams of it go into 1 kg of meat. That is all.", False),
-        ("Everything to the right calculates itself: the percentage, the target "
-         "for a typical batch, which scale should weigh it, and the tolerance "
+         "name and its weight. Everything to the right calculates itself: the "
+         "percentage, the target, which scale should weigh it, and the tolerance "
          "that scale can actually hold.", False),
+        ("", False),
+        ("Two kinds of recipe", True),
+        ("Meat recipes (the jerky and the vinegar bath): weights are grams per "
+         "1 kg of meat. The station weighs the meat first and scales every "
+         "ingredient to it.", False),
+        (f"Fixed batches ({fixed_names}): weights are grams per batch — one "
+         "standard size, no meat. The station skips the meat step and goes "
+         "straight to recipe review with exactly these weights. Row 3 says "
+         "'Fixed batch'.", False),
         ("", False),
         ("What the colours mean", True),
         ("Shaded cells are yours to type in. Everything else is a formula — "
@@ -496,31 +609,26 @@ def build_instructions(wb):
         ("An amber row is fine to run, but the scale's resolution is coarser than "
          "the recipe's percentage, so it is held to a looser band. The Note "
          "column says so.", False),
+        ("A weight of 0 lists an ingredient as a reminder (liquid smoke, for "
+         "now): the station shows it under 'listed but not weighed' and does "
+         "not weigh it. It does not stop the recipe.", False),
         ("", False),
         ("Which scale gets what", True),
-        ("The floor scale reads in 5 g steps. Two of those have to fit inside the "
-         "tolerance before it is enforcing anything, so it only handles targets "
-         "above 500 g — that is 2 × 5 g ÷ 2 %, on the Settings sheet. Everything "
-         "smaller goes on the bench scale.", False),
-        ("Change the tolerance percentage or either scale's division on the "
-         "Settings sheet and all seven recipes re-evaluate.", False),
+        (f"The {S['main_name'].lower()} reads in {S['main_div']:g} g steps. Two of "
+         f"those have to fit inside the tolerance before it is enforcing "
+         f"anything, so it only handles targets of {crossover:,.0f} g and up — "
+         f"2 × {S['main_div']:g} g ÷ {S['percent']:.0%}. Everything smaller goes "
+         f"on the {S['small_name'].lower()}.", False),
+        ("The Settings sheet mirrors recipes.json, which is what the station "
+         "reads. To change a scale or the tolerance, change recipes.json and "
+         "rebuild this workbook — changing Settings alone changes only the "
+         "workbook.", False),
         ("", False),
-        ("About the Teriyaki sheet", True),
-        ("Filled in from 'Recipes for Yield calculation - Teriyaki.csv', using its "
-         "column 6, which is already grams per 1 kg of meat.", False),
-        ("Two spellings were normalised so the ingredient list stays consistent: "
-         "'seasame seed' → 'Sesame seed', and capitalisation made uniform.", False),
-        ("Liquid smoke is in the source sheet with a quantity of 0, so it shows "
-         "as unweighable here. Either give it a quantity or delete the row.", False),
-        ("The very small spices are below what a floor scale can see. The costing "
-         "sheet treats the marinade as one premixed line at 255 g per kg of meat, "
-         "and that is how the station should weigh it too — premix the marinade "
-         "on the bench scale, then add it as a single ingredient.", False),
-        ("", False),
-        ("The other six recipes", True),
-        ("Gochujang, Pepper, Nati, Kerela Fry, Mughlai and Masala are set up but "
-         "empty — the formulas are already in every row. Each has one grey example "
-         "row showing the format; type over it.", False),
+        ("Names", True),
+        ("Jerky ingredient names are exactly as written on the recipe sheets, "
+         "spelling included. The same spice spelled two ways is two lines in "
+         "the stock totals, so keep to one spelling where you can — the "
+         "Ingredients sheet lists them.", False),
         ("", False),
         ("Feeding the station", True),
         ("Run  python3 xlsx_to_recipes.py DOKI-Recipes.xlsx  to turn this workbook "
@@ -555,8 +663,11 @@ def main():
 
     build_instructions(wb)
     build_settings(wb)
-    for name in RECIPES:
+    for name in SUPPLIED:
         build_recipe(wb, name, data=rows_for(name), example=False)
+    for name, rows in FIXED_BATCHES.items():
+        build_recipe(wb, name, data=[(n, float(g)) for n, g in rows],
+                     fixed=True)
     build_summary(wb)
     ing = build_ingredients(wb)
 

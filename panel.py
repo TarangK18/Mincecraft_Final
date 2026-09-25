@@ -81,6 +81,7 @@ class BatchState:
     batch_no: int = 1
     started_at: str = None
     water_ratio: float = None     # the ratio this batch was planned on
+    start_g: float = None         # reading when the first ingredient opened
 
     def reset(self):
         self.base = None
@@ -92,6 +93,7 @@ class BatchState:
         self.rebalanced = False
         self.started_at = None
         self.water_ratio = None
+        self.start_g = None
 
 
 # ------------------------------------------------------------------ widgets
@@ -650,7 +652,12 @@ class ProductScreen(Screen):
         for i, p in enumerate(self.cfg.products):
             draft = self.cfg.is_draft(p["id"])
             meat = self.cfg.meat_of(p["id"])
-            caption = p["name"] if not meat else f"{p['name']}\n{meat}"
+            if self.cfg.is_fixed_batch(p["id"]) and not draft:
+                # Tells the operator up front that no meat goes on the scale.
+                caption = (f"{p['name']}\nfixed batch · "
+                           f"{fmt(self.cfg.batch_total_g(p['id']))}")
+            else:
+                caption = p["name"] if not meat else f"{p['name']}\n{meat}"
             btn = button(caption, "ghost" if draft else "primary",
                          lambda _, pid=p["id"]: self.panel.choose_product(pid))
             btn.setMinimumHeight(int(62 * self.panel.scale))
@@ -700,8 +707,13 @@ class ReviewScreen(Screen):
         if self.cfg.water_gated(self.st.product) and self.st.water_ratio:
             water = (f" · water/flour <b style='color:{BLUE}'>"
                      f"{self.st.water_ratio:.3f}</b>")
-        self.crumb.setText(f"Step 3 of 3 — <b>Recipe review</b> · "
-                           f"{self.cfg.product_name(self.st.product)}{water}{rb}")
+        fixed = self.cfg.is_fixed_batch(self.st.product)
+        # A fixed batch skipped the weighing step, so it is two steps, not three.
+        step = "Step 2 of 2" if fixed else "Step 3 of 3"
+        kind = " · fixed batch, no meat" if fixed else ""
+        self.crumb.setText(f"{step} — <b>Recipe review</b> · "
+                           f"{self.cfg.product_name(self.st.product)}"
+                           f"{kind}{water}{rb}")
         steps = self.st.steps
         # A step no scale can resolve must stop the batch here, not be
         # discovered by an operator who adds nothing and is waved through.
@@ -773,7 +785,8 @@ class ReviewScreen(Screen):
                 row += 1
 
         total = self.st.base_wt + sum(s.target for s in steps)
-        for c, text in enumerate(["", "Total batch with meat", "", fmt(total), ""]):
+        total_label = "Total batch" if fixed else "Total batch with meat"
+        for c, text in enumerate(["", total_label, "", fmt(total), ""]):
             item = QTableWidgetItem(text)
             f = item.font(); f.setBold(True); item.setFont(f)
             if c >= 3:
@@ -844,7 +857,11 @@ class AddScreen(Screen):
             f"Target <b style='color:{INK}'>{fmt_g(s.target)} g</b> "
             f"(± {fmt_g(cfg.tol_of(s.target))} g)")
         self.prod_line.setText(cfg.product_name(st.product))
-        self.base_line.setText(f"{st.base or 'Meat'} {fmt(st.base_wt)}")
+        if cfg.is_fixed_batch(st.product):
+            self.base_line.setText(
+                f"Fixed batch {fmt(cfg.batch_total_g(st.product))}")
+        else:
+            self.base_line.setText(f"{st.base or 'Meat'} {fmt(st.base_wt)}")
         self.big.setText(f"0 / {fmt_g(s.target)} g")
 
     def set_tone(self, tone, text):
@@ -1363,7 +1380,11 @@ class Panel(QMainWindow):
 
     def _paint_info(self):
         st = self.st
-        if st.product:
+        if st.product and self.cfg.is_fixed_batch(st.product):
+            self.info_lbl.setText(
+                f"{self.cfg.product_name(st.product)} · fixed batch "
+                f"{fmt(self.cfg.batch_total_g(st.product))}")
+        elif st.product:
             bits = [self.cfg.product_name(st.product)]
             if st.base:
                 bits.append(st.base)
@@ -1442,10 +1463,20 @@ class Panel(QMainWindow):
         self.pick_product(self.st.product)
 
     def choose_product(self, product_id):
-        """Product is chosen first; the meat it implies is what gets weighed."""
+        """Product is chosen first; the meat it implies is what gets weighed.
+
+        A fixed batch has no meat, so there is nothing to weigh first: its
+        targets are known the moment it is chosen, and it goes straight to
+        recipe review.
+        """
         if self.cfg.is_draft(product_id):
             return                      # the button is disabled anyway
         self.st.product = product_id
+        if self.cfg.is_fixed_batch(product_id):
+            self.st.base = None
+            self.st.base_wt = 0.0
+            self.pick_product(product_id)
+            return
         self.st.base = self.cfg.meat_of(product_id)
         self.show_screen("CAPTURE")
 
@@ -1454,7 +1485,16 @@ class Panel(QMainWindow):
         self.st.product = product_id
         self.st.rebalanced = False
         cfg = self.cfg
-        p = cfg.product(product_id)
+
+        if cfg.is_fixed_batch(product_id):
+            total = cfg.batch_total_g(product_id)
+            self.st.steps = [
+                Step(name=n, pct=target / total * 100 if total else 0,
+                     target=target, scale=cfg.scale_for(target) or MAIN)
+                for n, target in cfg.targets_for(product_id)]
+            self.order_steps()
+            self.show_screen("REVIEW")
+            return
 
         gated = cfg.water_gated(product_id)
         flour_name = cfg.flour_of(product_id) if gated else None
@@ -1487,6 +1527,12 @@ class Panel(QMainWindow):
     def start_adding(self):
         idx = next((i for i, s in enumerate(self.st.steps)
                     if s.actual is None and not s.skipped), 0)
+        if self.st.start_g is None:
+            # What the floor scale read before anything went in. A meat batch
+            # already knows this — it is the meat — but a fixed batch starts
+            # from an empty tub that may not read exactly zero.
+            snap = self.state.snapshot()
+            self.st.start_g = snap["grams"] if snap["grams"] is not None else 0.0
         self.open_step(idx)
 
     def open_step(self, idx):
@@ -1626,7 +1672,11 @@ class Panel(QMainWindow):
         snap = self.state.snapshot()
         if not snap["fresh"] or snap["grams"] is None or not self.st.steps:
             return {"available": False}
-        expected = self.st.base_wt + sum(s.actual or 0 for s in self.st.steps)
+        if self.cfg.is_fixed_batch(self.st.product):
+            start = self.st.start_g or 0.0
+        else:
+            start = self.st.base_wt
+        expected = start + sum(s.actual or 0 for s in self.st.steps)
         observed = snap["grams"]
         # One division of slack per weighing, since each is quantised.
         allowance = self.cfg.main.division_g * (len(self.st.steps) + 1)
@@ -1643,7 +1693,11 @@ class Panel(QMainWindow):
             "batch_no": st.batch_no,
             "base": st.base,
             "product": st.product,
-            "base_weight_g": round(st.base_wt),
+            # A fixed batch weighs no meat: None, not 0 — "no base" and "a
+            # base of nothing" are different things to anyone reading the log.
+            "batch": "fixed" if self.cfg.is_fixed_batch(st.product) else "per_meat",
+            "base_weight_g": (None if self.cfg.is_fixed_batch(st.product)
+                              else round(st.base_wt)),
             "rebalanced": st.rebalanced,
             "started_at": st.started_at,
             "water_ratio": st.water_ratio,

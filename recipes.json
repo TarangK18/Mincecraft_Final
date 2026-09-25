@@ -23,7 +23,7 @@
       "_note": "SPEC NOT CONFIRMED — defaults assume a 3 kg x 0.1 g bench scale. Check the label and correct division_g, capacity_g and usable_g before this goes on the floor."
     },
     "crossover_g": null,
-    "_crossover_note": "null = derive it (2*main.division_g / tolerance.percent = 500 g here). Set a number to override: lower means more ingredients stay on the floor scale, which is easier to pour into but holds a looser tolerance — recipe review shows exactly which ingredients are affected and by how much."
+    "_crossover_note": "null = derive it (2*main.division_g / tolerance.percent = 100 g at a 1 g division and 2 %). Set a number to override: lower means more ingredients stay on the floor scale, which is easier to pour into but holds a looser tolerance — recipe review shows exactly which ingredients are affected and by how much."
   },
   "_tolerance_note": "floor_g is a backstop only. With two scales the crossover does the real work: nothing reaches the main scale that the main scale cannot hold to 'percent'.",
   "tolerance": {
@@ -491,6 +491,54 @@
           6.65
         ]
       ]
+    },
+    {
+      "id": "piri_piri_masala",
+      "name": "Piri Piri Masala",
+      "meat": null,
+      "ingredients": [
+        [
+          "chilli flakes",
+          300.0
+        ],
+        [
+          "salt",
+          466.0
+        ],
+        [
+          "sugar",
+          350.0
+        ],
+        [
+          "garlic powder",
+          164.0
+        ],
+        [
+          "onion powder",
+          164.0
+        ],
+        [
+          "pepper",
+          116.0
+        ],
+        [
+          "tamarind powder",
+          116.0
+        ],
+        [
+          "yeast extract",
+          116.0
+        ],
+        [
+          "citric acid",
+          60.0
+        ],
+        [
+          "paprika",
+          152.0
+        ]
+      ],
+      "batch": "fixed"
     }
   ],
   "water": {
@@ -501,5 +549,5 @@
     "day_start_hour": 0,
     "_day_start_note": "0 = plain calendar day. Set to e.g. 6 if a night shift runs past midnight, so the lock lands between shifts instead of mid-shift."
   },
-  "_products_note": "Quantities came from Tarang's sheets as GRAMS PER 10 KG OF MEAT and are stored here as a percentage of the meat weight (730 g per 10 kg = 7.3 %). Ingredient names are verbatim from those sheets, spellings included; where one was listed twice it is two weighings at different stages, so the second carries a suffix. An ingredient at 0 % is listed for reference and is not weighed. meat: null means not decided yet."
+  "_products_note": "Two kinds of product. Meat recipes: quantities came from Tarang's sheets as GRAMS PER 10 KG OF MEAT and are stored here as a percentage of the meat weight (730 g per 10 kg = 7.3 %). Fixed batches, marked \"batch\": \"fixed\": quantities are GRAMS PER BATCH, stored as-is — no meat is weighed and the station goes straight to recipe review. Jerky ingredient names are verbatim from the sheets, spellings included; where one was listed twice it is two weighings at different stages, so the second carries a suffix. An ingredient at 0 is listed for reference and is not weighed. meat: null on a meat recipe means not decided yet."
 }

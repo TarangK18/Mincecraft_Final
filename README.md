@@ -67,17 +67,18 @@ for free. For a console-only boot with no desktop, run it under
 | `check_display.py` | reports the screen size and the scale factor the panel will use |
 | `style.qss` | MINCECRAFT palette; `{N}px` sizes scale with the display |
 | `recipes.json` | products, percentages, tolerances, scales, PIN |
-| `recipe_data.py` | the recipes as supplied, in g per 10 kg — the source both `recipes.json` and the workbook are built from |
+| `recipe_data.py` | the recipes as supplied — jerky in g per 10 kg of meat, fixed batches in g per batch. The source both `recipes.json` and the workbook are built from |
 | `batches.jsonl` | one JSON line per completed batch (created on first batch) |
 | `consumption.py` | rebuilds `consumption.xlsx` from the batch log |
 | `check_scale.py` | measures a real scale: frame format, division, dither |
 | `fake_scale.py` | virtual serial port streaming real frames, for testing with no scale |
 | `run-demo.bat` / `run-demo.sh` | one-click demo launcher (Windows / Linux) |
 | `daily.json` | the day's water ratio (created when a supervisor sets it) |
-| `tests/test_scale.py` | 75 tests, incl. a virtual serial port and the entry point |
+| `tests/test_scale.py` | 93 tests, incl. a virtual serial port, the entry point, and the workbook round trip |
 | `tests/test_panel.py` | 91-check headless walkthrough of a whole batch |
 | `tests/test_fake_scale.py` | 10 tests driving the real reader over a virtual port |
 | `tests/test_layout.py` | 33 checks that every screen fits, from 800×480 to 1920×1080 |
+| `tests/test_fixed_batch.py` | 24 checks: a whole Piri Piri Masala batch through the real panel |
 
 `scale.py` imports nothing from `panel.py` and knows nothing about Qt. That
 boundary is the point: the logic that decides what the weight *is* stays
@@ -182,12 +183,46 @@ reconnects on its own every 2 s until the port comes back.
 
 ## What the panel does
 
-1. **START BATCH** → pick the finished product. Eight of them, the vinegar
-   bath among them. The meat is not asked: each product carries its own in
-   `recipes.json`, so there is one decision at the start of a batch, not two.
+1. **START BATCH** → pick the finished product. The meat is not asked: each
+   product carries its own in `recipes.json`, so there is one decision at the
+   start of a batch, not two.
 2. **Weigh the meat** — CAPTURE arms only when the reading is live, stable and
-   above that recipe's own minimum batch (see below).
+   above that recipe's own minimum batch (see below). *Skipped for a fixed
+   batch.*
 3. **Review** the recipe, then add ingredients one at a time.
+
+### Fixed batches — Piri Piri Masala
+
+Most products scale with the meat. A **fixed batch** does not: it is one
+standard size with no meat, and its quantities are the grams that go in, every
+time. Piri Piri Masala is the first — 2,004 g, ten ingredients. In
+`recipes.json` it is marked `"batch": "fixed"`; without that mark, quantities
+are read as a percentage of the meat.
+
+Choosing it goes **straight from the product list to recipe review** — there
+is nothing to weigh first. The product button says *fixed batch · 2.00 kg*, the
+review says *step 2 of 2 · no meat*, and the batch record carries
+`"batch": "fixed"` with `base_weight_g: null` — no meat, which is not the same
+as zero meat. Citric acid (60 g) is under the floor scale's 100 g crossover, so
+it goes to the bench scale at ±1.2 g; everything else is weighed on the floor.
+
+The end-of-batch check measures from wherever the scale stood when the first
+ingredient went in, so a tub that was not zeroed does not make a good batch look
+wrong.
+
+A fixed batch cannot use the daily water ratio and cannot name a meat; either
+is refused when `recipes.json` loads. So is a misspelt `"batch"` value — read
+as a percentage, 300 g of chilli flakes would become three times the weight of
+whatever is on the scale.
+
+To add another: put it in `FIXED_BATCHES` in `recipe_data.py`, then
+
+```bash
+python3 build_workbook.py && python3 xlsx_to_recipes.py
+```
+
+Its sheet in the workbook says **Fixed batch** in C3, which is how the
+converter knows not to divide the weights by ten.
 
 A recipe with no ingredients yet shows on the product screen but cannot be
 selected, and the screen says which ones and where to fill them in. An empty
@@ -251,10 +286,11 @@ overscan**: the Pi draws the full frame and the monitor cuts the edges. Set
 ## Verify
 
 ```bash
-python3 tests/test_scale.py                              # 75 tests
+python3 tests/test_scale.py                              # 93 tests
 QT_QPA_PLATFORM=offscreen python3 tests/test_panel.py    # 91 checks + screenshots
 python3 tests/test_fake_scale.py                         # 10 over a virtual port
 QT_QPA_PLATFORM=offscreen python3 tests/test_layout.py   # 33 — fits at every size
+QT_QPA_PLATFORM=offscreen python3 tests/test_fixed_batch.py  # 24 — Piri Piri Masala end to end
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base

@@ -283,9 +283,11 @@ class TestConfig(unittest.TestCase):
             if self.cfg.is_draft(p["id"]):
                 continue
             floor = self.cfg.min_base_for(p["id"])
+            # A fixed batch ignores the base, so every base gives its one
+            # standard batch; a meat recipe scales to each.
             for base in (floor, floor * 1.5, 3200, 8000):
-                steps = [Step(n, pct, base * pct / 100)
-                         for n, pct in self.cfg.active_ingredients(p["id"])]
+                steps = [Step(n, None, t)
+                         for n, t in self.cfg.targets_for(p["id"], base)]
                 bad = self.cfg.unweighable_steps(steps)
                 self.assertFalse(bad, f"{p['id']} at {base:.0f} g: {bad}")
 
@@ -316,9 +318,183 @@ class TestConfig(unittest.TestCase):
     def test_every_recipe_can_be_made_at_a_10_kg_batch(self):
         from panel_stub import Step
         for p in self.cfg.products:
-            steps = [Step(n, pct, 10000 * pct / 100)
-                     for n, pct in self.cfg.active_ingredients(p["id"])]
+            steps = [Step(n, None, t)
+                     for n, t in self.cfg.targets_for(p["id"], 10000)]
             self.assertFalse(self.cfg.unweighable_steps(steps), p["id"])
+
+
+class TestFixedBatch(unittest.TestCase):
+    """Piri Piri Masala: one standard batch, grams as written, no meat."""
+
+    PID = "piri_piri_masala"
+    AS_SENT = [("chilli flakes", 300), ("salt", 466), ("sugar", 350),
+               ("garlic powder", 164), ("onion powder", 164), ("pepper", 116),
+               ("tamarind powder", 116), ("yeast extract", 116),
+               ("citric acid", 60), ("paprika", 152)]
+
+    def setUp(self):
+        self.cfg = Config.load()
+
+    def test_it_is_a_fixed_batch_and_the_jerky_is_not(self):
+        self.assertTrue(self.cfg.is_fixed_batch(self.PID))
+        for p in self.cfg.products:
+            if p["id"] != self.PID:
+                self.assertFalse(self.cfg.is_fixed_batch(p["id"]), p["id"])
+
+    def test_targets_are_exactly_the_grams_sent(self):
+        self.assertEqual(self.cfg.targets_for(self.PID),
+                         [(n, float(g)) for n, g in self.AS_SENT])
+
+    def test_the_meat_on_the_scale_changes_nothing(self):
+        # The one mistake that would matter: treating 300 as a percentage.
+        for base in (None, 0, 500, 10000):
+            self.assertEqual(self.cfg.targets_for(self.PID, base),
+                             self.cfg.targets_for(self.PID))
+
+    def test_batch_total(self):
+        self.assertEqual(self.cfg.batch_total_g(self.PID), 2004)
+        self.assertIsNone(self.cfg.batch_total_g("masala_jerky"))
+
+    def test_no_meat_and_no_minimum(self):
+        self.assertIsNone(self.cfg.meat_of(self.PID))
+        self.assertEqual(self.cfg.min_base_for(self.PID), 0.0)
+
+    def test_the_three_typos_are_corrected(self):
+        names = [n for n, _ in self.cfg.targets_for(self.PID)]
+        for good, bad in (("onion powder", "oninion powder"),
+                          ("tamarind powder", "tamarid powder"),
+                          ("paprika", "paparica")):
+            self.assertIn(good, names)
+            self.assertNotIn(bad, names)
+
+    def test_citric_acid_goes_to_the_bench_and_the_rest_to_the_floor(self):
+        for n, t in self.cfg.targets_for(self.PID):
+            want = SMALL if n == "citric acid" else MAIN
+            self.assertEqual(self.cfg.scale_for(t), want, n)
+        self.assertAlmostEqual(self.cfg.tol_of(60), 1.2)
+
+    def test_the_whole_batch_is_weighable(self):
+        from panel_stub import Step
+        steps = [Step(n, None, t) for n, t in self.cfg.targets_for(self.PID)]
+        self.assertEqual(self.cfg.unweighable_steps(steps), [])
+
+    def test_matches_recipe_data(self):
+        from recipe_data import FIXED_BATCHES
+        self.assertEqual([(n, float(g)) for n, g in FIXED_BATCHES["Piri Piri Masala"]],
+                         self.cfg.targets_for(self.PID))
+
+    def _with(self, **changes):
+        import copy
+        data = copy.deepcopy(self.cfg.data)
+        p = next(p for p in data["products"] if p["id"] == self.PID)
+        p.update(changes)
+        return Config(data)
+
+    def test_a_misspelt_batch_type_is_refused_not_read_as_percent(self):
+        probs = self._with(batch="fxed").validate_products()
+        self.assertTrue(any("unknown batch type" in s for s in probs), probs)
+
+    def test_a_fixed_batch_cannot_be_water_gated(self):
+        probs = self._with(flour_ingredient="salt",
+                           water_ingredient="sugar").validate_products()
+        self.assertTrue(any("fixed batch cannot" in s for s in probs), probs)
+
+    def test_a_fixed_batch_naming_a_meat_is_refused(self):
+        probs = self._with(meat="Chicken").validate_products()
+        self.assertTrue(any("weighs no meat" in s for s in probs), probs)
+
+
+class TestWorkbookRoundTrip(unittest.TestCase):
+    """recipe_data.py -> DOKI-Recipes.xlsx -> recipes.json must reproduce
+    recipes.json exactly. This is where a fixed batch's grams could quietly be
+    divided by ten, like the per-10-kg jerky figures are."""
+
+    def test_rebuilding_reproduces_recipes_json(self):
+        import contextlib
+        import io
+        import json
+        import shutil
+        import tempfile
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, root)
+        import build_workbook
+        import xlsx_to_recipes
+        with tempfile.TemporaryDirectory() as d:
+            cwd = os.getcwd()
+            try:
+                os.chdir(d)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    build_workbook.main()
+                    out = os.path.join(d, "recipes.json")
+                    shutil.copy(os.path.join(root, "recipes.json"), out)
+                    rc = xlsx_to_recipes.main([os.path.join(d, build_workbook.OUT), out])
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(rc, 0)
+            with open(out, encoding="utf-8") as fh:
+                rebuilt = json.load(fh)
+        with open(os.path.join(root, "recipes.json"), encoding="utf-8") as fh:
+            shipped = json.load(fh)
+        self.assertEqual(rebuilt["products"], shipped["products"])
+
+    # A workbook straight out of build_workbook.py has formulas but no stored
+    # results, so the Weigh-on column reads as empty and the converter's
+    # "cannot be weighed" guard never fires. Once Excel saves it, the results
+    # are stored and the guard is live. These sheets hold values the way a
+    # saved workbook does, so the guard is actually exercised.
+
+    @staticmethod
+    def _sheet(rows, fixed=False, title="T"):
+        import openpyxl
+        ws = openpyxl.Workbook().active
+        ws.title = title
+        ws["C3"] = "Fixed batch" if fixed else "Per 1 kg of meat"
+        ws["C5"] = "t"
+        ws["F5"] = "—" if fixed else "chicken"
+        for i, (name, grams, where) in enumerate(rows):
+            ws.cell(row=9 + i, column=2, value=name)
+            ws.cell(row=9 + i, column=3, value=grams)
+            ws.cell(row=9 + i, column=6, value=where)
+        return ws
+
+    def _read(self, *a, **k):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, root)
+        import xlsx_to_recipes
+        return xlsx_to_recipes.read_sheet(self._sheet(*a, **k))
+
+    def test_a_zero_row_is_a_reminder_not_a_refusal(self):
+        # Liquid smoke at 0 in Teriyaki and Pepper. The station shows it and
+        # does not weigh it; the converter used to refuse the whole recipe.
+        for where in ("Listed — not weighed", "NEITHER — zero"):   # new, and pre-fix
+            product, problems = self._read([("teriyaki sauce", 73.0, "Floor scale"),
+                                            ("liquid smoke", 0, where)])
+            self.assertEqual(problems, [], where)
+            self.assertIn(["liquid smoke", 0.0], product["ingredients"])
+
+    def test_a_genuinely_unweighable_row_is_still_refused(self):
+        _, problems = self._read([("teriyaki sauce", 73.0, "Floor scale"),
+                                  ("bhut jholokia", 0.001,
+                                   "NEITHER — under bench resolution")])
+        self.assertTrue(any("bhut jholokia" in p for p in problems), problems)
+
+    def test_a_sheet_of_only_zeros_is_not_a_recipe(self):
+        _, problems = self._read([("liquid smoke", 0, "Listed — not weighed")])
+        self.assertIn("no ingredients filled in", problems)
+
+    def test_fixed_sheet_keeps_grams_and_meat_sheet_divides_by_ten(self):
+        fixed, p1 = self._read([("chilli flakes", 300, "Floor scale")], fixed=True)
+        meat, p2 = self._read([("chilli flakes", 300, "Floor scale")])
+        self.assertEqual((p1, p2), ([], []))
+        self.assertEqual(fixed["ingredients"], [["chilli flakes", 300.0]])
+        self.assertEqual(fixed.get("batch"), "fixed")
+        self.assertIsNone(fixed["meat"])
+        self.assertEqual(meat["ingredients"], [["chilli flakes", 30.0]])
+        self.assertNotIn("batch", meat)
+
+    def test_negative_weight_is_refused(self):
+        _, problems = self._read([("salt", -5, "NEITHER — negative weight")])
+        self.assertTrue(any("negative" in p for p in problems), problems)
 
 
 class TestWaterRatio(unittest.TestCase):

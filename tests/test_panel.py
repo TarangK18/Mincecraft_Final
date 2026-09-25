@@ -133,7 +133,8 @@ def main():
     prod = win.screens["PRODUCT"]
     buttons = [b for b in prod.findChildren(QPushButton)
                if b.text() and not b.text().startswith("\u25c0")]
-    check("all eight products are listed", len(buttons) == 8)
+    check(f"every product is listed ({len(cfg.products)})",
+          len(buttons) == len(cfg.products))
     check("the vinegar bath is one of them",
           any("Vinegar Bath" in b.text() for b in buttons))
     check("every shipped recipe is now filled in and selectable",
