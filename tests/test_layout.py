@@ -37,8 +37,8 @@ SIZES = [
     (1920, 1080, "a full-HD monitor or TV"),
 ]
 
-SCREENS = ["HOME", "CAPTURE", "PRODUCT", "REVIEW", "ADD", "MANUAL", "DONE",
-           "MENU", "WATER"]
+SCREENS = ["HOME", "CAPTURE", "SWAP", "PRODUCT", "REVIEW", "ADD", "MANUAL",
+           "MEAT", "DONE", "MENU", "WATER"]
 
 checks = []
 
@@ -175,6 +175,35 @@ def main():
         for f in (log, log + ".daily"):
             if os.path.exists(f):
                 os.remove(f)
+
+    # ------------------------------------------------- text stays readable
+    # The layout shrinks to fit 800x480; the text must not shrink with it.
+    # At 0.78 it did — body 12 px, labels 10 px — and could not be read at
+    # arm's length on the 7-inch panel. No rig here: it is not operator-facing.
+    from PyQt5.QtWidgets import QLabel, QPushButton, QTableWidget
+    MIN_TEXT_PX = 15
+    for w, h in ((800, 480), (800, 450)):
+        win = Panel(ScaleState(), cfg, BatchLog(os.path.join(shots, "_f.jsonl")),
+                    DailyRatio(os.path.join(shots, "_f.daily"), cfg),
+                    scale=scale_for(w, h))
+        win.resize(w, h)
+        win.show()
+        smallest = {}
+        for key in SCREENS:
+            load_a_batch(win, cfg)
+            win.show_screen(key)
+            pump(app)
+            for wd in win.findChildren((QLabel, QPushButton, QTableWidget)):
+                if wd.isVisible() and (wd.text() if hasattr(wd, "text") else "x"):
+                    px = wd.fontInfo().pixelSize()
+                    smallest[key] = min(smallest.get(key, 99), px)
+        low = {k: v for k, v in smallest.items() if v < MIN_TEXT_PX}
+        check(f"{w}x{h}: no operator text below {MIN_TEXT_PX} px "
+              f"(smallest {min(smallest.values())} px)", not low)
+        win.close()
+    for f in (os.path.join(shots, "_f.jsonl"), os.path.join(shots, "_f.daily")):
+        if os.path.exists(f):
+            os.remove(f)
 
     # --------------------------------- the specific regression, stated plainly
     win = Panel(ScaleState(), cfg, BatchLog(os.path.join(shots, "_l.jsonl")),

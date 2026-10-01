@@ -387,6 +387,12 @@ MAIN, SMALL = "main", "small"
 # key, quantities are a percentage of the meat, as for every jerky recipe.
 FIXED_BATCH = "fixed"
 
+# Papain is not in any recipe's ingredient list. It is added LAST, and only to
+# the products named in recipes.json "papain.applies_to", at a rate that
+# depends on the meat — which the operator is asked at the end of the batch.
+# Anything not listed here ("something else") gets no papain step at all.
+PAPAIN_MEATS = ("buffalo", "chicken")
+
 
 class ScaleSpec:
     """One physical scale."""
@@ -434,6 +440,8 @@ class Config:
         self.products = data["products"]
         self._tol_pct = data["tolerance"]["percent"]
         self._tol_floor = data["tolerance"]["floor_g"]
+
+        self.papain = data.get("papain") or {}
 
         water = data.get("water", {})
         self.water_ratio_min = float(water.get("ratio_min", 0.2))
@@ -611,6 +619,30 @@ class Config:
         p = self.product(product_id)
         return bool(p.get("draft")) or not self.active_ingredients(product_id)
 
+    # -- papain: the last step, by meat --------------------------------------
+
+    def papain_applies(self, product_id):
+        """True for the jerky recipes that end with the meat question."""
+        return product_id in (self.papain.get("applies_to") or [])
+
+    @property
+    def papain_name(self):
+        return self.papain.get("ingredient", "Papain")
+
+    def papain_rate(self, meat_kind):
+        """Grams of papain per kg of meat for this meat, or None for none."""
+        return (self.papain.get("g_per_kg_meat") or {}).get(meat_kind)
+
+    def papain_target(self, product_id, meat_kind, base_g):
+        """Grams of papain for this batch, or None: the product does not take
+        papain, or the meat is not one that gets it."""
+        if not self.papain_applies(product_id):
+            return None
+        rate = self.papain_rate(meat_kind)
+        if not rate or not base_g:
+            return None
+        return rate * base_g / 1000.0
+
     # -- fixed batches: no meat, the quantities are the batch -----------------
 
     def is_fixed_batch(self, product_id):
@@ -654,7 +686,13 @@ class Config:
         floor = self.min_base_g
         if self.small is None:
             return floor
-        for _, pct in self.active_ingredients(product_id):
+        pcts = [pct for _, pct in self.active_ingredients(product_id)]
+        if self.papain_applies(product_id):
+            # The papain added at the end has to be weighable too — at the
+            # smaller rate, since that is the harder one.
+            rates = [self.papain_rate(k) for k in PAPAIN_MEATS]
+            pcts += [r / 10.0 for r in rates if r]
+        for pct in pcts:
             floor = max(floor, 2 * self.small.division_g / (pct / 100.0))
         return floor
 
@@ -707,6 +745,21 @@ class Config:
     def validate_products(self):
         """Recipe problems worth refusing at load rather than mid-batch."""
         problems = []
+        ids = {p["id"] for p in self.products}
+        if self.papain:
+            for pid in self.papain.get("applies_to") or []:
+                if pid not in ids:
+                    problems.append(f"papain: applies to '{pid}', which is not a "
+                                    f"product")
+                elif self.product(pid).get("batch") == FIXED_BATCH:
+                    problems.append(f"papain: '{pid}' is a fixed batch — it "
+                                    f"weighs no meat to base papain on")
+            for kind in PAPAIN_MEATS:
+                rate = self.papain_rate(kind)
+                if rate is not None and not (isinstance(rate, (int, float))
+                                             and rate > 0):
+                    problems.append(f"papain: rate for {kind} must be a "
+                                    f"positive number of g per kg, not {rate!r}")
         for p in self.products:
             names = {n for n, _ in p["ingredients"]}
             flour, water = p.get("flour_ingredient"), p.get("water_ingredient")

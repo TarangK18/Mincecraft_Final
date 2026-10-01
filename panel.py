@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QLabel, QMainWindow, QPushButton, QSizePolicy, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from scale import MAIN, SMALL, fmt, fmt_g
+from scale import MAIN, PAPAIN_MEATS, SMALL, fmt, fmt_g
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -82,6 +82,7 @@ class BatchState:
     started_at: str = None
     water_ratio: float = None     # the ratio this batch was planned on
     start_g: float = None         # reading when the first ingredient opened
+    meat_type: str = None         # asked at the end: buffalo / chicken / other
 
     def reset(self):
         self.base = None
@@ -94,6 +95,7 @@ class BatchState:
         self.started_at = None
         self.water_ratio = None
         self.start_g = None
+        self.meat_type = None
 
 
 # ------------------------------------------------------------------ widgets
@@ -619,10 +621,92 @@ class CaptureScreen(Screen):
         elif snap["grams"] < floor:
             need = f" — this product needs at least {floor:.0f} g" \
                    if floor > self.cfg.min_base_g else ""
-            self.hint.setText(f"Put the {self.st.base or 'meat'} "
-                              f"in the container…{need}")
+            self.hint.setText(f"TARE the scale with the empty container, then "
+                              f"put the {self.st.base or 'meat'} in…{need}")
         else:
             self.hint.setText("Stabilising…")
+
+
+class SwapScreen(Screen):
+    """Between weighing the meat and adding anything to it.
+
+    The meat is only weighed here, not seasoned here: once its weight is
+    captured it comes off, and a different, empty container goes on. The
+    ingredients are weighed into that, starting from zero.
+
+    The scale was tared with the meat's own container, so taking the meat off
+    makes it read *negative* — the weight of that container. That is expected,
+    which is why this screen shows no raw number: "−1,150 g" is correct and
+    looks like a fault. It shows the two things the operator has to do, and
+    ticks them off as the scale confirms each one.
+
+    CONTINUE waits until the meat has visibly come off (the reading fell to
+    under half the captured weight) and the reading has settled. Without that,
+    a CONTINUE pressed with the meat still on would take the meat as the zero,
+    and lifting it off during the first ingredient would set off the
+    container-removed alarm.
+    """
+
+    def build(self):
+        self.crumb = label("", "crumb")
+        self.box.addWidget(self.crumb)
+        self.box.addStretch(1)
+        self.captured = label("", "prompt", Qt.AlignCenter, wrap=True)
+        self.box.addWidget(self.captured)
+        self.box.addSpacing(int(10 * self.panel.scale))
+        self.step_off = label("", "guide", Qt.AlignCenter, wrap=True)
+        self.step_on = label("", "guide", Qt.AlignCenter, wrap=True)
+        self.box.addWidget(self.step_off)
+        self.box.addWidget(self.step_on)
+        self.box.addStretch(1)
+        self.cont_btn = button("CONTINUE ▶", "good", self.panel.confirm_swap)
+        self.cont_btn.setEnabled(False)
+        self.action_row((button("◀ RE-WEIGH", "ghost",
+                                lambda: self.panel.show_screen("CAPTURE")), 0),
+                        (self.cont_btn, 1))
+
+    def enter(self):
+        st = self.st
+        self.meat_off = False
+        meat = st.base or "Meat"
+        self.crumb.setText(f"Step 2 of 3 — <b>Swap containers</b> · "
+                           f"{self.cfg.product_name(st.product)}")
+        self.captured.setText(f"{meat} captured: <b>{fmt(st.base_wt)}</b> ✓")
+        self.cont_btn.setEnabled(False)
+
+    def _line(self, lbl, tone, text):
+        if lbl.property("tone") != tone:
+            lbl.setProperty("tone", tone)
+            restyle(lbl)
+        lbl.setText(text)
+
+    def tick(self, snap, live):
+        meat = (self.st.base or "meat").lower()
+        if not live:
+            self._line(self.step_off, "dead", "Waiting for the scale…")
+            self._line(self.step_on, "dead", "")
+            self.cont_btn.setEnabled(False)
+            return
+        if not self.meat_off and snap["grams"] <= self.st.base_wt * 0.5:
+            self.meat_off = True        # latched: putting the container back on
+                                        # must not undo it
+        if not self.meat_off:
+            self._line(self.step_off, "under",
+                       f"1. Take the {meat} off the scale")
+            self._line(self.step_on, "dead",
+                       "2. Put the empty ingredient container on")
+            self.cont_btn.setEnabled(False)
+            return
+        self._line(self.step_off, "ok", f"1. {meat.capitalize()} off ✓")
+        if snap["stable"]:
+            self._line(self.step_on, "ok",
+                       "2. Empty container on and steady ✓ — it counts as zero. "
+                       "Press CONTINUE.")
+            self.cont_btn.setEnabled(True)
+        else:
+            self._line(self.step_on, "under",
+                       "2. Put the empty ingredient container on and let it settle…")
+            self.cont_btn.setEnabled(False)
 
 
 class ProductScreen(Screen):
@@ -784,6 +868,32 @@ class ReviewScreen(Screen):
                     self.table.setItem(row, c, item)
                 row += 1
 
+        # Papain is added last and depends on the meat, which is asked at the
+        # end. Show it now, with both amounts, so it can be got ready — but
+        # not as a step, and not in the total: nobody knows yet which applies.
+        cfg = self.cfg
+        if cfg.papain_applies(self.st.product) and self.st.meat_type is None:
+            kinds = [k for k in PAPAIN_MEATS if cfg.papain_rate(k)]
+            self.table.setRowCount(self.table.rowCount() + len(kinds) + 1)
+            head = QTableWidgetItem(f"LAST — {cfg.papain_name.upper()}, "
+                                    f"ASKED AT THE END BY MEAT")
+            f = head.font(); f.setBold(True); head.setFont(f)
+            head.setForeground(QColor(MUTED))
+            self.table.setItem(row, 0, head)
+            self.table.setSpan(row, 0, 1, 5)
+            row += 1
+            for k in kinds:
+                t = cfg.papain_target(self.st.product, k, self.st.base_wt)
+                for c, text in enumerate(
+                        ["", f"{cfg.papain_name} — if {k}",
+                         f"{cfg.papain_rate(k):g} g/kg", grams(t), ""]):
+                    item = QTableWidgetItem(text)
+                    item.setForeground(QColor(MUTED))
+                    if c >= 3:
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self.table.setItem(row, c, item)
+                row += 1
+
         total = self.st.base_wt + sum(s.target for s in steps)
         total_label = "Total batch" if fixed else "Total batch with meat"
         for c, text in enumerate(["", total_label, "", fmt(total), ""]):
@@ -805,9 +915,19 @@ class ReviewScreen(Screen):
             # Allowed, but the operator should not assume the recipe's
             # percentage is being enforced when the scale's step is coarser.
             self.warning.setProperty("tone", "ok"); restyle(self.warning)
+            # A count, not a list: the amber rows above already say which,
+            # and with small items on the main scale the list can run to a
+            # dozen names — enough to push the buttons off an 800x480 screen.
+            n = len(degraded)
+            used = [k for k in (MAIN, SMALL)
+                    if any(s.scale == k and s.name in degraded for s in steps)]
+            bands = ", ".join(
+                f"±{2 * self.cfg.spec(k).division_g:g} g on the "
+                f"{self.cfg.spec(k).name.lower()}" for k in used)
             self.warning.setText(
-                f"Held to the bench scale's resolution rather than the recipe's "
-                f"{self.cfg._tol_pct:.0%} on: {', '.join(degraded)}.")
+                f"Amber: {n} ingredient{'s' if n != 1 else ''} held to the "
+                f"scale's resolution ({bands}) rather than the recipe's "
+                f"{self.cfg._tol_pct:.0%}.")
 
 
 class AddScreen(Screen):
@@ -1132,18 +1252,76 @@ class DoneScreen(Screen):
         r = self.panel.reconcile()
         if not r.get("available"):
             self.recon.setText("Batch total could not be reconciled — "
-                               "the floor scale was not reporting at the end.")
+                               f"the {cfg.main.name.lower()} was not reporting "
+                               f"at the end.")
         elif r["ok"]:
             self.recon.setText(
-                f"Batch total reconciles: floor scale {r['observed_g']:.0f} g "
+                f"Batch total reconciles: {cfg.main.name.lower()} "
+                f"{r['observed_g']:.0f} g "
                 f"vs {r['expected_g']:.0f} g recorded "
                 f"({r['difference_g']:+.0f} g, within ±{r['allowance_g']:.0f} g).")
         else:
+            # Only point at the small-scale entries if there were any: they
+            # are the ones the Pi could not see, so the likeliest culprit.
+            hint = (f" One of the {cfg.small.name.lower()} entries is likely "
+                    f"wrong." if cfg.small and any(
+                        s.scale == SMALL and s.actual is not None
+                        for s in st.steps) else "")
             self.recon.setText(
-                f"⚠ Batch total does not reconcile: floor scale reads "
-                f"{r['observed_g']:.0f} g but {r['expected_g']:.0f} g was recorded "
-                f"({r['difference_g']:+.0f} g, outside ±{r['allowance_g']:.0f} g). "
-                f"One of the bench-scale entries is likely wrong.")
+                f"⚠ Batch total does not reconcile: {cfg.main.name.lower()} "
+                f"reads {r['observed_g']:.0f} g but {r['expected_g']:.0f} g was "
+                f"recorded ({r['difference_g']:+.0f} g, outside "
+                f"±{r['allowance_g']:.0f} g).{hint}")
+
+
+class MeatTypeScreen(Screen):
+    """The last question of a jerky batch: what meat is it?
+
+    Papain goes in last, and how much depends on the meat — buffalo and
+    chicken get it at their own rate, anything else gets none. Asked here,
+    after every other ingredient, because that is where papain goes; the
+    answer is logged with the batch either way.
+    """
+
+    def build(self):
+        self.crumb = label("", "crumb")
+        self.box.addWidget(self.crumb)
+        self.box.addStretch(1)
+        self.prompt = label("", "prompt", Qt.AlignCenter, wrap=True)
+        self.box.addWidget(self.prompt)
+        self.box.addSpacing(int(8 * self.panel.scale))
+        self.choices = QVBoxLayout()
+        self.choices.setSpacing(int(10 * self.panel.scale))
+        self.box.addLayout(self.choices)
+        self.box.addStretch(1)
+        self.buttons = {}
+        for kind in PAPAIN_MEATS + ("other",):
+            b = button("", "primary" if kind != "other" else "ghost",
+                       lambda _, k=kind: self.panel.choose_meat_type(k))
+            b.setMinimumHeight(int(60 * self.panel.scale))
+            self.choices.addWidget(b)
+            self.buttons[kind] = b
+        # ABORT stays small and to one side: at this point the batch is done
+        # but for the papain, and the answers above are what should be hit.
+        row = self.action_row((button("ABORT", "danger", self.panel.confirm_abort), 0))
+        row.addStretch(1)
+
+    def enter(self):
+        st, cfg = self.st, self.cfg
+        self.crumb.setText(f"Last step — <b>{cfg.papain_name}</b> · "
+                           f"{cfg.product_name(st.product)}")
+        self.prompt.setText("Every other ingredient is in. "
+                            "What meat is this batch?")
+        for kind, b in self.buttons.items():
+            t = cfg.papain_target(st.product, kind, st.base_wt)
+            if kind == "other" or t is None:
+                b.setText(f"SOMETHING ELSE — no {cfg.papain_name.lower()}")
+            else:
+                b.setText(f"{kind.upper()} — {cfg.papain_name.lower()} "
+                          f"{grams(t)}  ({cfg.papain_rate(kind):g} g/kg)")
+
+    def tick(self, snap, live):
+        pass
 
 
 class MenuScreen(Screen):
@@ -1168,10 +1346,10 @@ class MenuScreen(Screen):
 # -------------------------------------------------------------------- panel
 
 class Panel(QMainWindow):
-    SCREENS = {"HOME": HomeScreen, "CAPTURE": CaptureScreen,
+    SCREENS = {"HOME": HomeScreen, "CAPTURE": CaptureScreen, "SWAP": SwapScreen,
                "PRODUCT": ProductScreen, "REVIEW": ReviewScreen, "ADD": AddScreen,
                "MANUAL": ManualAddScreen, "DONE": DoneScreen, "MENU": MenuScreen,
-               "WATER": WaterRatioScreen}
+               "WATER": WaterRatioScreen, "MEAT": MeatTypeScreen}
 
     def __init__(self, state, cfg, batches, daily, sim=None, scale=1.0):
         super().__init__()
@@ -1338,8 +1516,15 @@ class Panel(QMainWindow):
         one whose edges are off the display.
         """
         self.scale = float(factor)
+        # Text follows the display up but never down. Shrinking everything to
+        # fit the 800x480 panel took body text to 12 px and labels to 10 px —
+        # unreadable at arm's length on a 7-inch screen. The layout still
+        # shrinks; the words do not.
+        self.font_scale = max(self.scale, 1.0)
         with open(os.path.join(HERE, "style.qss"), "r", encoding="utf-8") as fh:
             raw = fh.read()
+        raw = re.sub(r"\{f(\d+)\}",
+                     lambda m: str(round(int(m.group(1)) * self.font_scale)), raw)
         self.qss = re.sub(r"\{(\d+)\}",
                           lambda m: str(max(1, round(int(m.group(1)) * self.scale))),
                           raw)
@@ -1460,6 +1645,15 @@ class Panel(QMainWindow):
         if not snap["fresh"] or snap["grams"] is None:
             return
         self.st.base_wt = snap["grams"]
+        # The meat comes off next and the ingredients go into a different
+        # container, so there is a swap between weighing and adding.
+        self.st.start_g = None
+        self.show_screen("SWAP")
+
+    def confirm_swap(self):
+        """Meat off, empty container on. Targets are computed from the meat
+        already captured; the zero for the ingredients is taken when the first
+        one opens, with this container on the scale."""
         self.pick_product(self.st.product)
 
     def choose_product(self, product_id):
@@ -1584,8 +1778,9 @@ class Panel(QMainWindow):
                                 self.cfg.main.name)
             if self._dialog(dlg) != WitnessDialog.ACCEPT:
                 return
-            if not self.ask_pin("Accept an addition the floor scale disagrees "
-                                "with (will be logged)."):
+            if not self.ask_pin(f"Accept an addition the "
+                                f"{self.cfg.main.name.lower()} disagrees "
+                                f"with (will be logged)."):
                 return
             step.verified = False
         else:
@@ -1595,11 +1790,33 @@ class Panel(QMainWindow):
     def next_step(self):
         nxt = next((i for i, s in enumerate(self.st.steps)
                     if i > self.st.idx and s.actual is None and not s.skipped), None)
-        if nxt is None:
+        if nxt is not None:
+            self.open_step(nxt)
+        elif (self.cfg.papain_applies(self.st.product)
+              and self.st.meat_type is None):
+            # Everything else is in; papain is last and depends on the meat.
+            self.show_screen("MEAT")
+        else:
             self.record_batch()
             self.show_screen("DONE")
-        else:
-            self.open_step(nxt)
+
+    def choose_meat_type(self, kind):
+        """Buffalo or chicken: add the papain step at their rate, and weigh it.
+        Anything else: no papain, the batch is complete."""
+        st, cfg = self.st, self.cfg
+        st.meat_type = kind
+        target = cfg.papain_target(st.product, kind, st.base_wt)
+        if target is None:
+            self.record_batch()
+            self.show_screen("DONE")
+            return
+        rate = cfg.papain_rate(kind)
+        # Appended after the scale ordering on purpose: papain goes in last,
+        # whichever scale weighs it.
+        st.steps.append(Step(name=cfg.papain_name, pct=rate / 10.0,
+                             target=target,
+                             scale=cfg.scale_for(target) or MAIN))
+        self.open_step(len(st.steps) - 1)
 
     def skip_step(self):
         if self.ask_pin("Skip this ingredient (logged as skipped)."):
@@ -1672,10 +1889,13 @@ class Panel(QMainWindow):
         snap = self.state.snapshot()
         if not snap["fresh"] or snap["grams"] is None or not self.st.steps:
             return {"available": False}
-        if self.cfg.is_fixed_batch(self.st.product):
-            start = self.st.start_g or 0.0
+        # Measured from the reading when the first ingredient opened. The
+        # meat is weighed and taken off before that, so it is not in this
+        # container; a fixed batch has no meat at all.
+        if self.st.start_g is not None:
+            start = self.st.start_g
         else:
-            start = self.st.base_wt
+            start = 0.0 if self.cfg.is_fixed_batch(self.st.product) else self.st.base_wt
         expected = start + sum(s.actual or 0 for s in self.st.steps)
         observed = snap["grams"]
         # One division of slack per weighing, since each is quantised.
@@ -1699,6 +1919,12 @@ class Panel(QMainWindow):
             "base_weight_g": (None if self.cfg.is_fixed_batch(st.product)
                               else round(st.base_wt)),
             "rebalanced": st.rebalanced,
+            # The reading the ingredients were weighed from — the empty
+            # ingredient container. Negative is normal after a TARE on the
+            # meat's container.
+            "start_g": None if st.start_g is None else round(st.start_g, 1),
+            # Asked at the end of a jerky batch; decides the papain step.
+            "meat_type": st.meat_type,
             "started_at": st.started_at,
             "water_ratio": st.water_ratio,
             "production_day": self.daily.production_day(),

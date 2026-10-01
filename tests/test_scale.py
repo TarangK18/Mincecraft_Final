@@ -132,7 +132,13 @@ class TestDedupAndStability(unittest.TestCase):
 
 class TestConfig(unittest.TestCase):
     def setUp(self):
-        self.cfg = Config.load()
+        # These test the routing rules themselves, so they run with the
+        # crossover derived from the scale (100 g), whatever recipes.json
+        # overrides it to. The shipped setting is tested in TestShippedRouting.
+        import copy
+        data = copy.deepcopy(Config.load().data)
+        data["scales"]["crossover_g"] = None
+        self.cfg = Config(data)
 
     def test_the_floor_scale_reads_to_one_gram(self):
         self.assertEqual(self.cfg.main.division_g, 1.0)
@@ -367,11 +373,12 @@ class TestFixedBatch(unittest.TestCase):
             self.assertIn(good, names)
             self.assertNotIn(bad, names)
 
-    def test_citric_acid_goes_to_the_bench_and_the_rest_to_the_floor(self):
+    def test_all_ten_are_weighed_on_the_main_scale(self):
+        # With the 4 g crossover even the 60 g of citric acid stays on the
+        # scale the Pi can read, held to +-2 g rather than the recipe's 1.2 g.
         for n, t in self.cfg.targets_for(self.PID):
-            want = SMALL if n == "citric acid" else MAIN
-            self.assertEqual(self.cfg.scale_for(t), want, n)
-        self.assertAlmostEqual(self.cfg.tol_of(60), 1.2)
+            self.assertEqual(self.cfg.scale_for(t), MAIN, n)
+        self.assertAlmostEqual(self.cfg.tol_of(60), 2.0)
 
     def test_the_whole_batch_is_weighable(self):
         from panel_stub import Step
@@ -402,6 +409,122 @@ class TestFixedBatch(unittest.TestCase):
     def test_a_fixed_batch_naming_a_meat_is_refused(self):
         probs = self._with(meat="Chicken").validate_products()
         self.assertTrue(any("weighs no meat" in s for s in probs), probs)
+
+
+class TestPapain(unittest.TestCase):
+    """Papain: out of the vinegar bath, added last to the jerky by meat."""
+
+    JERKY = ["teriyaki_jerky", "gochujangh_jerky", "pepper_jerky",
+             "karnatka_nati_jerky", "kerala_fry_jerky", "mughlai_jerky",
+             "masala_jerky"]
+
+    def setUp(self):
+        self.cfg = Config.load()
+
+    def test_the_vinegar_bath_has_no_papain(self):
+        names = [n.lower() for n, _ in self.cfg.product("vinegar_bath")["ingredients"]]
+        self.assertNotIn("papain", names)
+        self.assertEqual(names, ["white vinegar"])
+
+    def test_no_recipe_lists_papain_as_an_ingredient(self):
+        # It is only ever the conditional last step, never a fixed row.
+        for p in self.cfg.products:
+            self.assertNotIn("papain", [n.lower() for n, _ in p["ingredients"]],
+                             p["id"])
+
+    def test_all_seven_jerky_get_it_and_nothing_else_does(self):
+        self.assertEqual(sorted(p["id"] for p in self.cfg.products
+                                if self.cfg.papain_applies(p["id"])),
+                         sorted(self.JERKY))
+        self.assertFalse(self.cfg.papain_applies("vinegar_bath"))
+        self.assertFalse(self.cfg.papain_applies("piri_piri_masala"))
+
+    def test_rates_by_meat(self):
+        # 6 g per kg for buffalo, 2 g per kg for chicken — Tarang, 2026-09-25.
+        self.assertEqual(self.cfg.papain_target("masala_jerky", "buffalo", 10000), 60)
+        self.assertEqual(self.cfg.papain_target("masala_jerky", "chicken", 10000), 20)
+        self.assertAlmostEqual(
+            self.cfg.papain_target("pepper_jerky", "chicken", 3200), 6.4)
+
+    def test_anything_else_gets_none(self):
+        for kind in ("other", "mutton", "fish", None):
+            self.assertIsNone(self.cfg.papain_target("masala_jerky", kind, 10000))
+        self.assertIsNone(self.cfg.papain_target("vinegar_bath", "buffalo", 10000))
+
+    def test_papain_is_weighable_at_every_jerky_minimum(self):
+        from panel_stub import Step
+        for pid in self.JERKY:
+            base = self.cfg.min_base_for(pid)
+            for kind in ("buffalo", "chicken"):
+                t = self.cfg.papain_target(pid, kind, base)
+                self.assertEqual(self.cfg.unweighable_steps([Step("p", None, t)]),
+                                 [], f"{pid} {kind} at {base:.0f} g")
+
+    def test_bad_papain_config_is_refused(self):
+        import copy
+        for change, needle in (
+                ({"applies_to": ["no_such_product"]}, "not a product"),
+                ({"applies_to": ["piri_piri_masala"]}, "fixed batch"),
+                ({"g_per_kg_meat": {"buffalo": -6, "chicken": 2}}, "positive")):
+            data = copy.deepcopy(self.cfg.data)
+            data["papain"].update(change)
+            probs = Config(data).validate_products()
+            self.assertTrue(any(needle in s for s in probs), (change, probs))
+
+
+class TestShippedRouting(unittest.TestCase):
+    """The crossover Tarang chose: everything from 4 g up on the main scale.
+
+    Below 100 g the main scale's 1 g step cannot hold 2 %, so those
+    ingredients are held to +-2 g — looser, but measured by the Pi rather than
+    recorded as assumed. These pin the choice and its one hard limit.
+    """
+
+    def setUp(self):
+        self.cfg = Config.load()
+
+    def test_the_crossover_is_4_g(self):
+        self.assertEqual(self.cfg.main_min_target_g, 4)
+        self.assertEqual(self.cfg.scale_for(4), MAIN)
+        self.assertEqual(self.cfg.scale_for(3.99), SMALL)
+
+    def test_the_scales_are_called_main_and_small(self):
+        self.assertEqual((self.cfg.main.name, self.cfg.small.name),
+                         ("Main scale", "Small scale"))
+
+    def test_below_100_g_on_the_main_scale_is_two_grams_and_flagged(self):
+        for t in (4, 10, 60, 99):
+            self.assertEqual(self.cfg.scale_for(t), MAIN, t)
+            self.assertAlmostEqual(self.cfg.tol_of(t), 2.0)
+            self.assertTrue(self.cfg.tolerance_degraded(t), t)   # amber on review
+        self.assertFalse(self.cfg.tolerance_degraded(100))
+
+    def test_an_empty_addition_can_never_pass_on_the_main_scale(self):
+        # The one line the crossover must not cross: if the tolerance reached
+        # the target, adding nothing would sit inside it and be accepted.
+        # At 4 g the band is 2-6 g, so zero is still 2 g outside.
+        t = self.cfg.main_min_target_g
+        while t <= 200:
+            self.assertLess(self.cfg.tol_of(t), t, f"{t} g")
+            t += 0.25
+        for p in self.cfg.products:
+            for base in (self.cfg.min_base_for(p["id"]), 3200, 10000):
+                for n, tgt in self.cfg.targets_for(p["id"], base):
+                    if self.cfg.scale_for(tgt) == MAIN:
+                        self.assertLess(self.cfg.tol_of(tgt), tgt,
+                                        f"{p['id']} {n} {tgt:.2f} g")
+
+    def test_every_recipe_is_still_weighable(self):
+        from panel_stub import Step
+        for p in self.cfg.products:
+            if self.cfg.is_draft(p["id"]):
+                continue
+            floor = self.cfg.min_base_for(p["id"])
+            for base in (floor, 3200, 8000, 10000):
+                steps = [Step(n, None, t)
+                         for n, t in self.cfg.targets_for(p["id"], base)]
+                self.assertEqual(self.cfg.unweighable_steps(steps), [],
+                                 f"{p['id']} at {base:.0f} g")
 
 
 class TestWorkbookRoundTrip(unittest.TestCase):

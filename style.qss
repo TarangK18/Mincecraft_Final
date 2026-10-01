@@ -1,14 +1,17 @@
 /* MINCECRAFT panel palette — carried over from the simulator.
    bg #0d1117 · screen #101820 · ink #e9eef4 · muted #8fa0b0
    blue #4a90d9 · green #3fbf7f · amber #e8b339 · red #e05d5d · line #2a3440
-   Font sizes are written as {N}px and multiplied by the display scale factor
-   at startup; see Panel._apply_style. */
+   Sizes written {N}px scale with the display, up and down, so the layout
+   fits the screen. Font sizes are written {fN}px and scale UP with a large
+   display but never below N: on the 800x480 panel the layout shrinks to
+   0.78 and text shrinking with it was too small to read. See
+   Panel.apply_scale. */
 
 QWidget {
     background: #0d1117;
     color: #e9eef4;
     font-family: "DejaVu Sans", "Segoe UI", sans-serif;
-    font-size: {15}px;
+    font-size: {f17}px;
 }
 
 QDialog, QDialog > QWidget { background: #161e27; }
@@ -17,9 +20,9 @@ QDialog, QDialog > QWidget { background: #161e27; }
     background: #0b1016;
     border-bottom: 1px solid #2a3440;
 }
-#statusbar QLabel { background: transparent; color: #8fa0b0; font-size: {13}px; }
-#stationName { color: #e9eef4; font-weight: bold; letter-spacing: 2px; font-size: {14}px; }
-#link { font-weight: bold; font-size: {14}px; }
+#statusbar QLabel { background: transparent; color: #8fa0b0; font-size: {f15}px; }
+#stationName { color: #e9eef4; font-weight: bold; letter-spacing: 2px; font-size: {f15}px; }
+#link { font-weight: bold; font-size: {f16}px; }
 #link[state="live"]  { color: #3fbf7f; }
 #link[state="stale"] { color: #e8b339; }
 #link[state="down"]  { color: #e05d5d; }
@@ -28,7 +31,7 @@ QPushButton {
     border: 0;
     border-radius: 9px;
     padding: {14}px {16}px;
-    font-size: {16}px;
+    font-size: {f18}px;
     font-weight: bold;
     color: #ffffff;
     background: #2c3a4a;
@@ -56,24 +59,24 @@ QPushButton[variant="ghost"] {
 }
 QPushButton[variant="ghost"]:pressed    { background: #1b232d; }
 
-#crumb   { color: #8fa0b0; font-size: {13}px; }
-#prompt  { color: #8fa0b0; font-size: {15}px; }
-#ingName { font-size: {30}px; font-weight: bold; }
-#target  { color: #8fa0b0; font-size: {14}px; }
-#stepNo  { color: #8fa0b0; font-size: {13}px; }
-#bigAdd  { font-size: {58}px; font-weight: bold; }
-#guide   { font-size: {20}px; font-weight: bold; }
+#crumb   { color: #8fa0b0; font-size: {f15}px; }
+#prompt  { color: #8fa0b0; font-size: {f18}px; }
+#ingName { font-size: {f30}px; font-weight: bold; }
+#target  { color: #8fa0b0; font-size: {f16}px; }
+#stepNo  { color: #8fa0b0; font-size: {f15}px; }
+#bigAdd  { font-size: {f58}px; font-weight: bold; }
+#guide   { font-size: {f22}px; font-weight: bold; }
 #guide[tone="under"] { color: #4a90d9; }
 #guide[tone="ok"]    { color: #3fbf7f; }
 #guide[tone="over"]  { color: #e05d5d; }
 #guide[tone="dead"]  { color: #8fa0b0; }
-#notice { font-size: {14}px; }
+#notice { font-size: {f16}px; }
 #notice[tone="over"] { color: #e05d5d; font-weight: bold; }
 #notice[tone="ok"]   { color: #8fa0b0; }
-#stars       { font-size: {40}px; }
-#doneHead    { color: #3fbf7f; font-size: {17}px; font-weight: bold; }
-#dialogTitle { font-size: {20}px; font-weight: bold; }
-#dialogBody  { color: #8fa0b0; font-size: {14}px; }
+#stars       { font-size: {f40}px; }
+#doneHead    { color: #3fbf7f; font-size: {f19}px; font-weight: bold; }
+#dialogTitle { font-size: {f22}px; font-weight: bold; }
+#dialogBody  { color: #8fa0b0; font-size: {f16}px; }
 #dialogTitle[tone="alarm"] { color: #e05d5d; }
 #dialogTitle[tone="warn"]  { color: #e8b339; }
 
@@ -81,7 +84,7 @@ QPushButton[variant="ghost"]:pressed    { background: #1b232d; }
     background: #0b1016;
     border: 1px solid #2a3440;
     border-radius: 8px;
-    font-size: {26}px;
+    font-size: {f26}px;
     letter-spacing: 8px;
     padding: {8}px;
 }
@@ -90,7 +93,7 @@ QTableWidget {
     background: #101820;
     gridline-color: #2a3440;
     border: 0;
-    font-size: {14}px;
+    font-size: {f16}px;
 }
 QTableWidget::item { padding: {5}px; border-bottom: 1px solid #2a3440; }
 QHeaderView::section {
@@ -99,7 +102,7 @@ QHeaderView::section {
     border: 0;
     border-bottom: 1px solid #2a3440;
     padding: {6}px;
-    font-size: {12}px;
+    font-size: {f14}px;
     font-weight: bold;
 }
 QScrollBar:vertical { background: #101820; width: 14px; }
@@ -107,14 +110,14 @@ QScrollBar::handle:vertical { background: #2a3440; border-radius: 7px; min-heigh
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 
 #simbar { background: #171208; border-top: 1px solid #3a2f12; }
-#simbar QLabel { background: transparent; color: #e8b339; font-size: {12}px; letter-spacing: 1px; }
+#simbar QLabel { background: transparent; color: #e8b339; font-size: {f12}px; letter-spacing: 1px; }
 #simbar QPushButton {
     background: #3a2f12; color: #e8b339;
-    padding: {7}px {9}px; font-size: {12}px; border-radius: 6px;
+    padding: {7}px {9}px; font-size: {f12}px; border-radius: 6px;
 }
 #simbar QPushButton:pressed { background: #6b5620; color: #ffd97a; }
 #simReadout {
-    color: #e8b339; font-size: {12}px; font-weight: bold;
+    color: #e8b339; font-size: {f12}px; font-weight: bold;
     font-family: "DejaVu Sans Mono", monospace;
 }
 #pourBtn { background: #57451a; color: #ffd97a; }

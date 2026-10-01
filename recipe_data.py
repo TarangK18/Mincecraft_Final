@@ -9,8 +9,11 @@ distinguishable on the operator's screen.
 
 # name -> (meat or None, [(ingredient, grams per 10 kg), ...])
 RECIPES = {
+# Papain was here at 20 g per 10 kg. It moved (2026-09-25): it is now added
+# LAST to the jerky, only for buffalo (6 g/kg) or chicken (2 g/kg), and the
+# station asks which. That rule lives in recipes.json under "papain".
 "Vinegar Bath": (None, [
-    ("White vinegar", 150.00), ("Papain", 20.00)]),
+    ("White vinegar", 150.00)]),
 
 "Teriyaki Jerky": (None, [
     ("teriyaki sauce", 730.00), ("soy sauce", 464.00), ("honey", 420.00),

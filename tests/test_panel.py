@@ -169,7 +169,27 @@ def main():
     shot(win, "03-capture.png")
     cap.cap_btn.click()
     pump(app, 0.5)
-    check("capturing goes straight to the recipe review", win.current == "REVIEW")
+    check("capturing goes to the container swap", win.current == "SWAP")
+    check("the captured meat weight is kept", abs(win.st.base_wt - 3200) <= 2)
+
+    # ---------------------------------------------------------------- swap
+    # The meat comes off and a different, empty container goes on; the
+    # ingredients are weighed into that from zero.
+    swap = win.screens["SWAP"]
+    pump(app, 0.5)
+    check("CONTINUE is locked while the meat is still on",
+          not swap.cont_btn.isEnabled())
+    sim.zero()                         # meat and its container off
+    pump(app, 0.6)
+    sim.set(900)                       # the empty ingredient container
+    settle(app, state)
+    check("CONTINUE arms once the meat is off and the container has settled",
+          swap.cont_btn.isEnabled())
+    check("and the screen ticks both steps off",
+          "✓" in swap.step_off.text() and "✓" in swap.step_on.text())
+    swap.cont_btn.click()
+    pump(app, 0.5)
+    check("then on to the recipe review", win.current == "REVIEW")
 
     # -------------------------------------------------------- ordering
     check("every target computed at once from the captured meat",
@@ -217,11 +237,14 @@ def main():
             if check_once:
                 check("a bench-scale ingredient opens the manual screen",
                       win.current == "MANUAL")
-                check("the manual screen names the bench scale",
-                      "Bench scale" in man.instruction.text())
+                check("the manual screen names the small scale",
+                      cfg.small.name in man.instruction.text())
                 check("there is no keypad on the bench screen",
                       not hasattr(man, "pad"))
-                check("the bar starts empty", man.bar.added == 0)
+                # Within the scale's own dither: the sim jitters by a gram, so
+                # a reading one step up just after the tare is not "not empty".
+                check("the bar starts empty",
+                      man.bar.added <= 2 * cfg.main.division_g)
             sim.add(target)
             settle(app, state)
             if check_once:
@@ -258,6 +281,34 @@ def main():
         while time.time() < end and win.current == "ADD" and win.st.idx == i:
             pump(app, 0.1)
 
+    # ------------------------------------------------ papain, by meat, last
+    end = time.time() + 5
+    while time.time() < end and win.current not in ("MEAT", "DONE"):
+        pump(app, 0.1)
+    check("after the last ingredient the station asks what the meat is",
+          win.current == "MEAT")
+    meat = win.screens["MEAT"]
+    check("the choices are buffalo, chicken and something else, with amounts",
+          "BUFFALO" in meat.buttons["buffalo"].text()
+          and "CHICKEN" in meat.buttons["chicken"].text()
+          and "no papain" in meat.buttons["other"].text())
+    meat.buttons["chicken"].click()
+    pump(app, 0.4)
+    pap = win.st.steps[-1]
+    check("chicken adds papain as the last step at 2 g per kg of meat",
+          pap.name == "Papain"
+          and abs(pap.target - 2 * win.st.base_wt / 1000) < 1e-6)
+    if win.current == "ADD":
+        sim.add(pap.target)
+        end = time.time() + 15
+        while time.time() < end and win.current == "ADD":
+            pump(app, 0.1)
+    elif win.current == "MANUAL":
+        sim.add(pap.target)
+        settle(app, state)
+        man.confirm_btn.click()
+        pump(app, 0.4)
+
     end = time.time() + 10
     while time.time() < end and win.current != "DONE":
         pump(app, 0.1)
@@ -280,9 +331,12 @@ def main():
 
     rows = batches.recent()
     check("batch written to the log on the Pi", len(rows) == 1)
-    check("logged batch carries every actual",
-          rows and len(rows[0]["steps"]) == 15
+    check("logged batch carries every actual — 15 ingredients plus papain",
+          rows and len(rows[0]["steps"]) == 16
           and all(s["actual_g"] is not None for s in rows[0]["steps"]))
+    check("the log records the meat answered at the end, and papain last",
+          rows and rows[0].get("meat_type") == "chicken"
+          and rows[0]["steps"][-1]["name"] == "Papain")
     check("the log records which scale weighed each ingredient",
           rows and all(s["weighed_on"] in (MAIN, SMALL) for s in rows[0]["steps"]))
     check("the log distinguishes measured from assumed",
@@ -298,7 +352,7 @@ def main():
     cpath = os.path.join(ROOT, "_test_consumption.xlsx")
     nb, nrows, ning = consumption.build(LOG, cpath)
     check("the consumption workbook rebuilds from the batch log",
-          nb == 1 and nrows == 15 and ning == 15)
+          nb == 1 and nrows == 16 and ning == 16)
     os.path.exists(cpath) and os.remove(cpath)
 
     # ------------------------------------------------------------- overlays

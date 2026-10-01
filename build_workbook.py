@@ -78,6 +78,7 @@ def station_settings():
         "small_cap": small.get("capacity_g", 3000),
         "small_usable": small.get("usable_g", small.get("capacity_g", 3000)),
         "crossover": data["scales"].get("crossover_g"),
+        "papain": data.get("papain") or {},
     }
 
 
@@ -200,7 +201,7 @@ def build_settings(wb):
     ws["B18"].border = BOX
     ws["B18"].number_format = "#,##0"
     ws["C18"] = ("Optional. Leave blank to use the derived value. A lower "
-                 "number keeps more ingredients on the floor scale — easier to "
+                 "number keeps more ingredients on the main scale — easier to "
                  "pour into, looser tolerance, and the recipe sheets say which.")
     ws["C18"].font = NOTE_FONT
 
@@ -524,7 +525,22 @@ def build_recipe(wb, name, data=None, example=False, fixed=False):
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.print_area = f"A1:H{TOTAL_ROW + 4}"
+    # Papain is not an ingredient row: it is added last, and only for some
+    # meats, so the station asks at the end. Say so where the recipe is read.
+    pap = S["papain"]
+    if not fixed and name.lower().replace(" ", "_") in (pap.get("applies_to") or []):
+        rates = pap.get("g_per_kg_meat") or {}
+        rate_txt = ", ".join(f"{k} {v:g} g per kg of meat" for k, v in rates.items())
+        c = ws.cell(row=TOTAL_ROW + 5, column=2, value=(
+            f"Last step — {pap.get('ingredient', 'Papain')}: the station asks "
+            f"which meat at the end of the batch. {rate_txt}; anything else, "
+            f"none. Not typed here — set in recipes.json."))
+        c.font = BOLD
+        c.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.merge_cells(start_row=TOTAL_ROW + 5, start_column=2,
+                       end_row=TOTAL_ROW + 5, end_column=8)
+        ws.row_dimensions[TOTAL_ROW + 5].height = 30
+    ws.print_area = f"A1:H{TOTAL_ROW + 5}"
     return ws
 
 
@@ -535,7 +551,8 @@ def build_summary(wb):
     sheet_title(ws, "All recipes",
                 "Rolls up every recipe sheet. Nothing to type here.")
     headers = ["Recipe", "Batch type", "Ingredients", "Total (g)",
-               "Measured against", "On floor scale", "On bench scale",
+               "Measured against", f"On {S['main_name'].lower()}",
+               f"On {S['small_name'].lower()}",
                "Cannot be weighed"]
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=4, column=i, value=h)
@@ -583,7 +600,37 @@ def build_instructions(wb):
                 "One sheet per recipe. Row 3 of each sheet says what its "
                 "weights are measured against.")
 
-    crossover = S["crossover"] or 2 * S["main_div"] / S["percent"]
+    derived = 2 * S["main_div"] / S["percent"]
+
+    def papain_text():
+        pap = S["papain"]
+        if not pap:
+            return "No papain rule is set in recipes.json."
+        rates = pap.get("g_per_kg_meat") or {}
+        return (f"{pap.get('ingredient', 'Papain')} is not on any recipe sheet. "
+                f"For the {len(pap.get('applies_to') or [])} jerky recipes, once "
+                f"every other ingredient is in, the station asks what the meat "
+                f"is: " + ", ".join(f"{k} gets {v:g} g per kg of meat"
+                                    for k, v in rates.items())
+                + "; anything else gets none. Change the rates in recipes.json.")
+
+    def which_scale_text():
+        main, small = S["main_name"].lower(), S["small_name"].lower()
+        step = S["main_div"]
+        if not S["crossover"]:
+            return (f"The {main} reads in {step:g} g steps. Two of those have to "
+                    f"fit inside the tolerance before it is enforcing anything, "
+                    f"so it handles targets of {derived:,.0f} g and up — "
+                    f"2 × {step:g} g ÷ {S['percent']:.0%}. Everything smaller "
+                    f"goes on the {small}.")
+        return (f"Everything from {S['crossover']:g} g up is weighed on the {main}, "
+                f"where the Pi measures and logs it; only smaller items go on the "
+                f"{small}. The {main} reads in {step:g} g steps, so below "
+                f"{derived:,.0f} g it cannot hold the recipe's {S['percent']:.0%} "
+                f"and holds ±{2 * step:g} g instead — 60 g is ±{2 * step:g} g "
+                f"({2 * step / 60:.1%}), 10 g is ±{2 * step:g} g "
+                f"({2 * step / 10:.0%}). Those rows are amber. The "
+                f"{S['crossover']:g} g setting is in recipes.json.")
     fixed_names = ", ".join(FIXED_BATCHES) or "none yet"
     lines = [
         ("How to use", True),
@@ -601,6 +648,9 @@ def build_instructions(wb):
          "straight to recipe review with exactly these weights. Row 3 says "
          "'Fixed batch'.", False),
         ("", False),
+        ("Papain — the last step, by meat", True),
+        (papain_text(), False),
+        ("", False),
         ("What the colours mean", True),
         ("Shaded cells are yours to type in. Everything else is a formula — "
          "overwriting one breaks that row.", False),
@@ -614,11 +664,7 @@ def build_instructions(wb):
          "not weigh it. It does not stop the recipe.", False),
         ("", False),
         ("Which scale gets what", True),
-        (f"The {S['main_name'].lower()} reads in {S['main_div']:g} g steps. Two of "
-         f"those have to fit inside the tolerance before it is enforcing "
-         f"anything, so it only handles targets of {crossover:,.0f} g and up — "
-         f"2 × {S['main_div']:g} g ÷ {S['percent']:.0%}. Everything smaller goes "
-         f"on the {S['small_name'].lower()}.", False),
+        (which_scale_text(), False),
         ("The Settings sheet mirrors recipes.json, which is what the station "
          "reads. To change a scale or the tolerance, change recipes.json and "
          "rebuild this workbook — changing Settings alone changes only the "

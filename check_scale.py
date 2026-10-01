@@ -169,7 +169,7 @@ def main(argv=None):
         crossover = 2 * div / 0.02
         print(f"\nwith a 2 % tolerance, this scale can only hold that above "
               f"{crossover:.0f} g.")
-        print(f"  anything smaller belongs on the bench scale.")
+        print("  anything smaller belongs on the small scale.")
     return 0
 
 

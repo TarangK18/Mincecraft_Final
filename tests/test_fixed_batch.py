@@ -113,12 +113,11 @@ def main():
     want = dict(cfg.targets_for(PID))
     check("ten ingredients", len(steps) == 10)
     check("every target is exactly the recipe's grams", got == want)
-    check("citric acid is weighed on the bench scale",
-          next(s for s in steps if s.name == "citric acid").scale == SMALL)
-    check("everything else on the floor scale",
-          all(s.scale == MAIN for s in steps if s.name != "citric acid"))
-    check("floor-scale ingredients come first, bench last",
-          steps[-1].name == "citric acid")
+    check("all ten on the main scale, citric acid included (4 g crossover)",
+          all(s.scale == MAIN for s in steps))
+    check("citric acid held to +-2 g on the main scale",
+          abs(cfg.tol_of(next(s for s in steps
+                              if s.name == "citric acid").target) - 2.0) < 1e-9)
     total_row = [rev.table.item(r, 1).text() for r in range(rev.table.rowCount())
                  if rev.table.item(r, 1)
                  and rev.table.item(r, 1).text().startswith("Total")]
@@ -169,8 +168,9 @@ def main():
           {s["name"]: s["target_g"] for s in rec["steps"]}
           == {n: round(t, 2) for n, t in want.items()})
     cit = next(s for s in rec["steps"] if s["name"] == "citric acid")
-    check("citric acid is logged as bench-weighed and assumed",
-          cit["weighed_on"] == SMALL and cit["assumed"] is True)
+    check("citric acid is logged as measured on the main scale, not assumed",
+          cit["weighed_on"] == MAIN and cit["assumed"] is False
+          and cit["verified"] is True)
     recon = rec["reconciliation"]
     check("the batch reconciles, measured from the tub, not from zero "
           f"(expected {recon.get('expected_g')}, saw {recon.get('observed_g')})",

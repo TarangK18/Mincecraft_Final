@@ -74,11 +74,13 @@ for free. For a console-only boot with no desktop, run it under
 | `fake_scale.py` | virtual serial port streaming real frames, for testing with no scale |
 | `run-demo.bat` / `run-demo.sh` | one-click demo launcher (Windows / Linux) |
 | `daily.json` | the day's water ratio (created when a supervisor sets it) |
-| `tests/test_scale.py` | 93 tests, incl. a virtual serial port, the entry point, and the workbook round trip |
-| `tests/test_panel.py` | 91-check headless walkthrough of a whole batch |
+| `tests/test_scale.py` | 105 tests, incl. a virtual serial port, the entry point, and the workbook round trip |
+| `tests/test_panel.py` | 100-check headless walkthrough of a whole batch |
 | `tests/test_fake_scale.py` | 10 tests driving the real reader over a virtual port |
-| `tests/test_layout.py` | 33 checks that every screen fits, from 800×480 to 1920×1080 |
-| `tests/test_fixed_batch.py` | 24 checks: a whole Piri Piri Masala batch through the real panel |
+| `tests/test_layout.py` | 35 checks that every screen fits, from 800×480 to 1920×1080, and text stays ≥ 15 px |
+| `tests/test_fixed_batch.py` | 23 checks: a whole Piri Piri Masala batch through the real panel |
+| `tests/test_swap.py` | 26 checks: the meat-off, empty-container-on swap, including negative readings after TARE |
+| `tests/test_papain.py` | 20 checks: the meat question and the papain step for buffalo, chicken and anything else |
 
 `scale.py` imports nothing from `panel.py` and knows nothing about Qt. That
 boundary is the point: the logic that decides what the weight *is* stays
@@ -186,10 +188,44 @@ reconnects on its own every 2 s until the port comes back.
 1. **START BATCH** → pick the finished product. The meat is not asked: each
    product carries its own in `recipes.json`, so there is one decision at the
    start of a batch, not two.
-2. **Weigh the meat** — CAPTURE arms only when the reading is live, stable and
-   above that recipe's own minimum batch (see below). *Skipped for a fixed
-   batch.*
-3. **Review** the recipe, then add ingredients one at a time.
+2. **Weigh the meat** — TARE the scale with the empty meat container, put the
+   meat in. CAPTURE arms only when the reading is live, stable and above that
+   recipe's own minimum batch (see below). *Skipped for a fixed batch.*
+3. **Swap containers** — the meat comes off and a different, empty container
+   goes on for the ingredients. CONTINUE unlocks once the scale has seen the
+   meat come off and the reading has settled. Because the scale was tared on
+   the meat's container, it reads *negative* once that is off; that is normal,
+   so this screen shows two ticked steps rather than the number.
+4. **Review** the recipe, then add ingredients one at a time into the new
+   container, each starting from zero. The end-of-batch check measures from
+   the empty ingredient container, not from the meat.
+5. **Papain, last** (jerky only) — once every other ingredient is in, the
+   station asks what the meat is (see below).
+
+### Papain — the last step, by meat
+
+Papain is not in any recipe's ingredient list. For the seven jerky recipes,
+after the last ingredient the station asks **Buffalo / Chicken / Something
+else**:
+
+| meat | papain |
+|---|---|
+| Buffalo | 6 g per kg of the captured meat |
+| Chicken | 2 g per kg |
+| Something else | none — the batch completes |
+
+The papain is then weighed like any other ingredient, as the very last step.
+Recipe review shows it ahead of time — "LAST — PAPAIN, ASKED AT THE END BY
+MEAT", with both amounts — so it can be got ready, but it is not a step and
+not in the total until the meat is known. The batch record carries
+`meat_type` (`buffalo`, `chicken`, `other`, or null for products that do not
+ask).
+
+It used to be 20 g per 10 kg in the vinegar bath; that is gone — the vinegar
+bath is white vinegar only. The rule lives in `recipes.json` under `papain`
+(ingredient name, grams per kg for each meat, which products), so the rates
+can change without touching code. Minimum batch sizes account for it: the
+papain must be weighable at the smaller rate too.
 
 ### Fixed batches — Piri Piri Masala
 
@@ -203,8 +239,8 @@ Choosing it goes **straight from the product list to recipe review** — there
 is nothing to weigh first. The product button says *fixed batch · 2.00 kg*, the
 review says *step 2 of 2 · no meat*, and the batch record carries
 `"batch": "fixed"` with `base_weight_g: null` — no meat, which is not the same
-as zero meat. Citric acid (60 g) is under the floor scale's 100 g crossover, so
-it goes to the bench scale at ±1.2 g; everything else is weighed on the floor.
+as zero meat. All ten ingredients are weighed on the main scale — citric acid
+(60 g) included, at ±2 g — so the Pi measures every one of them.
 
 The end-of-batch check measures from wherever the scale stood when the first
 ingredient went in, so a tub that was not zeroed does not make a good batch look
@@ -236,7 +272,7 @@ refuse to start the batch. A reminder should not stop the line.
 
 **Each recipe has its own minimum batch size.** The smallest ingredient sets
 it: bhut jholokia at 0.025 % of the meat does not reach two divisions of the
-bench scale until the batch is 800 g, so a 500 g Teriyaki batch is not a
+small scale until the batch is 800 g, so a 500 g Teriyaki batch is not a
 tolerance problem — it is unmakeable. The capture screen says so at the scale
 rather than letting it fail at recipe review.
 
@@ -255,7 +291,16 @@ per ingredient. Supervisor menu → *Batch log* reads them back.
 The station is a kiosk: fullscreen, no cursor, Escape ignored. **Menu → Exit
 to desktop, behind the supervisor PIN**, is the only way out.
 
-## Screens scale with the monitor — both ways
+## Screens scale with the monitor — text only upwards
+
+**The layout scales both ways; the text only scales up.** On the 800×480
+panel the layout shrinks to 0.78 to fit, and the text used to shrink with it —
+body 12 px, labels 10 px, too small to read at arm's length. Font sizes are
+now written `{fN}px` in `style.qss` and never go below their design size, and
+the small ones were raised (body 17, labels 15, table 16, buttons 18). Nothing
+on an operator screen is below 15 px; `tests/test_layout.py` fails if it ever
+is. The demo rig strip is the one exception at 12 px — it is not
+operator-facing, and at full size it is the one row that would not fit in 800 px.
 
 The panel is drawn at 1024×600 and multiplied by `min(width/1024,
 height/600)` to fit the real display: up to 2× on a large monitor, **down** to
@@ -286,11 +331,13 @@ overscan**: the Pi draws the full frame and the monitor cuts the edges. Set
 ## Verify
 
 ```bash
-python3 tests/test_scale.py                              # 93 tests
-QT_QPA_PLATFORM=offscreen python3 tests/test_panel.py    # 91 checks + screenshots
+python3 tests/test_scale.py                              # 105 tests
+QT_QPA_PLATFORM=offscreen python3 tests/test_panel.py    # 100 checks + screenshots
 python3 tests/test_fake_scale.py                         # 10 over a virtual port
-QT_QPA_PLATFORM=offscreen python3 tests/test_layout.py   # 33 — fits at every size
-QT_QPA_PLATFORM=offscreen python3 tests/test_fixed_batch.py  # 24 — Piri Piri Masala end to end
+QT_QPA_PLATFORM=offscreen python3 tests/test_layout.py   # 35 — fits, and text ≥ 15 px
+QT_QPA_PLATFORM=offscreen python3 tests/test_fixed_batch.py  # 23 — Piri Piri Masala end to end
+QT_QPA_PLATFORM=offscreen python3 tests/test_swap.py     # 26 — the container swap
+QT_QPA_PLATFORM=offscreen python3 tests/test_papain.py   # 20 — papain by meat
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base
@@ -339,7 +386,7 @@ Every batch record carries the `water_ratio` and `production_day` it used.
 
 Every target is computed the moment the meat is weighed — not one at a time —
 and the review screen shows the whole plan before any pouring starts, grouped
-into a **Floor scale** section and a **Bench scale** section with counts and
+into a **Main scale** section and a **Small scale** section with counts and
 subtotals. Floor-scale ingredients are worked first, then bench, so the
 operator makes one trip rather than walking between the two scales for every
 ingredient. Recipe order is kept within each group.
@@ -363,36 +410,51 @@ and deleting it costs nothing: `python3 consumption.py` brings it back correct.
 
 ## Two scales
 
-The floor scale reads and errs to **1 g**. Two of those have to fit inside the
-recipe's 2 % before it can be said to be enforcing anything, so it can only
-hold that tolerance above **100 g** — derived as `2 × division ÷ percent`, not
-picked. Everything below that goes on the bench scale. Confirm the division
-with `check_scale.py` before trusting the split.
+- **Main scale** — the RS232 scale wired to the Pi. Reads and errs to 1 g.
+- **Small scale** — the separate one. Not wired; the operator reads it.
 
-That crossover is the fix for a real defect. With one scale, 58 g of salt got
-a ±10 g window, and anything under 10 g had a tolerance *wider than its own
-target* — meaning zero was inside tolerance and an operator who added nothing
-would pass the step. Routed to the bench scale, the same salt is held to
-±1.15 g, which is what the recipe asked for all along.
+**Everything from 4 g up is weighed on the main scale** (`scales.crossover_g:
+4`, set 2026-09-25). Only items under 4 g go to the small scale. The point is
+that the Pi *measures* what goes on the main scale; small-scale items are
+recorded as the recipe target, flagged assumed.
 
-`scales.crossover_g` overrides the derived value. Lowering it keeps more
-ingredients on the floor scale — easier to pour into, looser tolerance — and
-recipe review marks in amber exactly which ingredients are then held to the
-scale's resolution rather than the recipe's percentage. Nothing is degraded
-silently.
+The trade-off is tolerance. The main scale steps in 1 g, so the tightest band
+it can hold is ±2 g (two steps). From 100 g up that is inside the recipe's 2 %;
+below 100 g it is looser — 60 g is ±2 g (3.3 %), 10 g is ±2 g (20 %), 6 g of
+bhut jholokia is ±2 g (33 %). Recipe review shows those rows in amber with a
+one-line count underneath.
+
+4 g is also the lowest the setting can safely go. At 4 g the accepted band is
+2–6 g, so an empty addition still fails. At 2 g the band would reach zero and
+an operator who added nothing would pass; a test pins this.
+
+Without the override the crossover is derived — `2 × division ÷ percent`,
+100 g — and everything below it goes on the small scale at the recipe's own
+2 %. Set `crossover_g` to `null` to go back to that.
+
+Why the derived value exists: with one scale reading in 5 g steps, 58 g of
+salt got a ±10 g window, and anything under 10 g had a tolerance *wider than its
+own target* — zero was inside tolerance, so an operator who added nothing would
+pass the step. On the small scale the same salt is held to ±1.15 g. Under the
+4 g setting that salt is on the main scale at ±2 g: looser than 2 %, but
+measured, and zero is still outside it.
+
+Whatever the setting, recipe review marks in amber exactly which ingredients
+are held to a scale's resolution rather than the recipe's percentage. Nothing
+is degraded silently.
 
 If neither scale can weigh an ingredient, review says so and refuses to start
-the batch. A `dead_zone` appears if the bench scale's usable capacity stops
-below the floor scale's crossover; it is reported rather than discovered
+the batch. A `dead_zone` appears if the small scale's usable capacity stops
+below the main scale's crossover; it is reported rather than discovered
 mid-batch.
 
-### The bench scale is not wired to the Pi
+### The small scale is not wired to the Pi
 
 There is **no keypad**. A typed number is only ever a claim about what the bench
 scale showed, and the Pi has no way to check it, so the station does not ask for
 one. The operator weighs the ingredient on the bench, tips it into the tub, and
-**the floor scale sees it arrive** — that is the only figure the Pi can vouch
-for, and it drives the same tolerance bar as a floor-scale step, so the addition
+**the main scale sees it arrive** — that is the only figure the Pi can vouch
+for, and it drives the same tolerance bar as a main-scale step, so the addition
 is visible as it happens rather than confirmed blind.
 
 What gets recorded is the **recipe target**, flagged `assumed` rather than
@@ -401,16 +463,16 @@ recorded weight will be the 148.5 g target, not this."* The consumption workbook
 carries a **Measured?** column so inventory can tell a weighed figure from an
 assumed one and never treats the two as the same evidence.
 
-The floor scale still acts as a witness:
+The main scale still acts as a witness:
 
-- Above 2 g (two floor-scale divisions) it compares what it saw arrive against
+- Above 2 g (two main-scale divisions) it compares what it saw arrive against
   the target and challenges a mismatch behind the PIN. It cannot be fooled by an
   ingredient that was never added.
-- Below that it says so plainly — "below what the Floor scale can see, so
+- Below that it says so plainly — "below what the Main scale can see, so
   nothing here can be cross-checked" — and logs the step unverified rather than
   implying a check that never happened.
 - At the end of the batch the **total** reconciles: individually a 2 g spice is
-  invisible, collectively the bench-weighed ingredients are not. It will not
+  invisible, collectively the small-scale ingredients are not. It will not
   say which entry was wrong, but it will say that one was.
 
 Every batch record carries `weighed_on`, `assumed`, `witness_g` and `verified`
@@ -418,7 +480,7 @@ per ingredient, plus the batch reconciliation.
 
 ## Open — needs a human decision
 
-**The bench scale's spec is a guess.** `recipes.json` assumes 3 kg × 0.1 g.
+**The small scale's spec is a guess.** `recipes.json` assumes 3 kg × 0.1 g.
 Check the label and correct `division_g`, `capacity_g` and `usable_g`
 (capacity minus the tare of whatever container sits on it) before this goes on
 the floor — the crossover and every small-ingredient tolerance depend on them.

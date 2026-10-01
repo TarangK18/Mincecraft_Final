@@ -6,7 +6,7 @@
   "_scales_note": "Two scales. An ingredient goes on whichever one can actually hold the recipe's percentage tolerance. The main scale can only manage 'percent' once 2 divisions fit inside it, i.e. above 2*division/percent grams; below that the small scale takes over, up to its usable capacity (capacity minus the tare of whatever container sits on it). Set 'connected': true for the small scale only if it is wired to the Pi and streams the same frame format — otherwise the operator reads its display and keys the value in, and the main scale corroborates.",
   "scales": {
     "main": {
-      "name": "Floor scale",
+      "name": "Main scale",
       "division_g": 1,
       "capacity_g": 50000,
       "port": "/dev/ttyUSB0",
@@ -14,7 +14,7 @@
       "_note": "Reads and errs to 1 g, confirmed by Tarang and consistent with the RS232 frame, which carries three decimals of a kilogram."
     },
     "small": {
-      "name": "Bench scale",
+      "name": "Small scale",
       "division_g": 0.1,
       "capacity_g": 3000,
       "usable_g": 2000,
@@ -22,8 +22,8 @@
       "connected": false,
       "_note": "SPEC NOT CONFIRMED — defaults assume a 3 kg x 0.1 g bench scale. Check the label and correct division_g, capacity_g and usable_g before this goes on the floor."
     },
-    "crossover_g": null,
-    "_crossover_note": "null = derive it (2*main.division_g / tolerance.percent = 100 g at a 1 g division and 2 %). Set a number to override: lower means more ingredients stay on the floor scale, which is easier to pour into but holds a looser tolerance — recipe review shows exactly which ingredients are affected and by how much."
+    "crossover_g": 4,
+    "_crossover_note": "Set to 4 g at Tarang's request (2026-09-25): everything from 4 g up is weighed on the main (RS232) scale, where the Pi measures and logs it; only items under 4 g go to the small scale. The main scale reads in 1 g steps, so below 100 g it cannot hold the recipe's 2 % and holds +/-2 g instead (two of its steps): 60 g is +/-2 g (3.3 %), 10 g is +/-2 g (20 %), 4 g is +/-2 g (50 %). Recipe review marks those rows amber. Set to null to go back to the derived value, 2 * main.division_g / tolerance.percent = 100 g."
   },
   "_tolerance_note": "floor_g is a backstop only. With two scales the crossover does the real work: nothing reaches the main scale that the main scale cannot hold to 'percent'.",
   "tolerance": {
@@ -40,10 +40,6 @@
         [
           "White vinegar",
           1.5
-        ],
-        [
-          "Papain",
-          0.2
         ]
       ]
     },
@@ -549,5 +545,22 @@
     "day_start_hour": 0,
     "_day_start_note": "0 = plain calendar day. Set to e.g. 6 if a night shift runs past midnight, so the lock lands between shifts instead of mid-shift."
   },
-  "_products_note": "Two kinds of product. Meat recipes: quantities came from Tarang's sheets as GRAMS PER 10 KG OF MEAT and are stored here as a percentage of the meat weight (730 g per 10 kg = 7.3 %). Fixed batches, marked \"batch\": \"fixed\": quantities are GRAMS PER BATCH, stored as-is — no meat is weighed and the station goes straight to recipe review. Jerky ingredient names are verbatim from the sheets, spellings included; where one was listed twice it is two weighings at different stages, so the second carries a suffix. An ingredient at 0 is listed for reference and is not weighed. meat: null on a meat recipe means not decided yet."
+  "_products_note": "Two kinds of product. Meat recipes: quantities came from Tarang's sheets as GRAMS PER 10 KG OF MEAT and are stored here as a percentage of the meat weight (730 g per 10 kg = 7.3 %). Fixed batches, marked \"batch\": \"fixed\": quantities are GRAMS PER BATCH, stored as-is — no meat is weighed and the station goes straight to recipe review. Jerky ingredient names are verbatim from the sheets, spellings included; where one was listed twice it is two weighings at different stages, so the second carries a suffix. An ingredient at 0 is listed for reference and is not weighed. meat: null on a meat recipe means not decided yet.",
+  "papain": {
+    "_note": "Papain is added LAST to these products, never from the recipe list. After every other ingredient the station asks whether the meat is buffalo, chicken or something else; buffalo and chicken get papain at these grams per kg of the captured meat, anything else gets no papain step. Set by Tarang 2026-09-25; it used to be 20 g per 10 kg in the vinegar bath.",
+    "ingredient": "Papain",
+    "g_per_kg_meat": {
+      "buffalo": 6,
+      "chicken": 2
+    },
+    "applies_to": [
+      "teriyaki_jerky",
+      "gochujangh_jerky",
+      "pepper_jerky",
+      "karnatka_nati_jerky",
+      "kerala_fry_jerky",
+      "mughlai_jerky",
+      "masala_jerky"
+    ]
+  }
 }

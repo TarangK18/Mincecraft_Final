@@ -65,7 +65,9 @@ def base_label(b):
     here would read as a missing value rather than as 'there is no meat'."""
     if b.get("batch") == "fixed":
         return "fixed batch"
-    return b.get("base")
+    # The recipe's own meat if it names one; otherwise what the operator said
+    # at the end of the batch when asked for the papain step.
+    return b.get("base") or ((b.get("meat_type") or "").capitalize() or None)
 
 
 def build_consumption(wb, batches):
@@ -74,7 +76,7 @@ def build_consumption(wb, batches):
     ws["A1"].font = TITLE
     ws["A2"] = ("One row per ingredient per batch. Rebuilt from batches.jsonl — "
                 "edits here are lost on the next rebuild. 'assumed' means the "
-                "figure is the recipe target, because the bench scale is not "
+                "figure is the recipe target, because the small scale is not "
                 "wired to the Pi and its reading never reached it.")
     ws["A2"].font = MUTED
     header(ws, 4,
