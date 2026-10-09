@@ -696,6 +696,24 @@ class Config:
             floor = max(floor, 2 * self.small.division_g / (pct / 100.0))
         return floor
 
+    def typed_base_problem(self, product_id, grams):
+        """Why a meat weight typed in by a supervisor can't be used, or None.
+
+        The same floor as weighing it — a batch too small to make is too
+        small whichever way its weight arrived — and a ceiling at the main
+        scale's usable capacity, which is far above any real batch and so
+        only catches a slipped decimal point (325 kg for 3.25 kg).
+        """
+        if grams is None or grams <= 0:
+            return "not a weight"
+        floor = self.min_base_for(product_id)
+        if grams < floor:
+            return f"below the {fmt(floor)} this recipe needs"
+        ceiling = self.main.usable_g
+        if ceiling and grams > ceiling:
+            return f"more than {fmt(ceiling)} — check the decimal point"
+        return None
+
     @property
     def any_water_gated(self):
         """Whether the daily ratio locks production at all.

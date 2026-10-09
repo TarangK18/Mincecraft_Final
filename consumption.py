@@ -31,6 +31,7 @@ BOLD = Font(name=FONT, size=10, bold=True)
 TITLE = Font(name=FONT, size=14, bold=True, color="1F3552")
 RED = Font(name=FONT, size=10, color="9C0006")
 MUTED = Font(name=FONT, size=9, italic=True, color="666666")
+AMBER = Font(name=FONT, size=10, bold=True, color="9C5700")
 
 
 def load(path):
@@ -125,8 +126,8 @@ def build_batches(wb, batches):
     header(ws, 4,
            ["Date", "Batch", "Product", "Base", "Base weight (g)",
             "Ingredients", "Added (g)", "Batch total (g)", "Water ratio",
-            "Rebalanced", "Reconciled", "Difference (g)"],
-           [12, 10, 16, 10, 14, 12, 12, 14, 11, 12, 12, 13])
+            "Rebalanced", "Reconciled", "Difference (g)", "Meat weight"],
+           [12, 10, 16, 10, 14, 12, 12, 14, 11, 12, 12, 13, 12])
 
     for i, b in enumerate(batches):
         r = 5 + i
@@ -141,10 +142,15 @@ def build_batches(wb, batches):
                  len(steps), added, base + added, b.get("water_ratio"),
                  "yes" if b.get("rebalanced") else "",
                  {True: "yes", False: "NO"}.get(ok, "n/a"),
-                 rec.get("difference_g")]
+                 rec.get("difference_g"),
+                 # How the meat weight got here: weighed, or typed by a
+                 # supervisor. Older records predate the choice — weighed.
+                 "" if b.get("batch") == "fixed"
+                 else b.get("base_weight_source") or "scale"]
         for j, v in enumerate(cells, start=1):
             c = ws.cell(row=r, column=j, value=v)
-            c.font = RED if (ok is False and j == 11) else BODY
+            c.font = (RED if (ok is False and j == 11)
+                      else AMBER if (j == 13 and v == "typed") else BODY)
             if j in (5, 7, 8, 12):
                 c.number_format = "#,##0.0"
             if j == 9:

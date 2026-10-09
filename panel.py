@@ -83,6 +83,7 @@ class BatchState:
     water_ratio: float = None     # the ratio this batch was planned on
     start_g: float = None         # reading when the first ingredient opened
     meat_type: str = None         # asked at the end: buffalo / chicken / other
+    base_typed: bool = False      # meat weight typed in by a supervisor, not weighed
 
     def reset(self):
         self.base = None
@@ -96,6 +97,7 @@ class BatchState:
         self.water_ratio = None
         self.start_g = None
         self.meat_type = None
+        self.base_typed = False
 
 
 # ------------------------------------------------------------------ widgets
@@ -599,8 +601,13 @@ class CaptureScreen(Screen):
         self.box.addStretch(1)
         self.cap_btn = button("CAPTURE WEIGHT", "good", self.panel.capture_base)
         self.cap_btn.setEnabled(False)
+        # The way round the scale: a supervisor types the meat's weight. Always
+        # available — a dead scale is one of the reasons to need it.
+        self.type_btn = button("TYPE WEIGHT (PIN)", "ghost",
+                               self.panel.open_typed_base)
         self.action_row((button("◀ BACK", "ghost",
                                 lambda: self.panel.show_screen("PRODUCT")), 0),
+                        (self.type_btn, 0),
                         (self.cap_btn, 1))
 
     def enter(self):
@@ -615,7 +622,8 @@ class CaptureScreen(Screen):
         ok = live and snap["stable"] and snap["grams"] >= floor
         self.cap_btn.setEnabled(ok)
         if not live:
-            self.hint.setText("Waiting for the scale…")
+            self.hint.setText("Waiting for the scale… A supervisor can "
+                              "TYPE WEIGHT instead.")
         elif ok:
             self.hint.setText(f"Stable: {snap['grams']:.0f} g — press CAPTURE")
         elif snap["grams"] < floor:
@@ -625,6 +633,93 @@ class CaptureScreen(Screen):
                               f"put the {self.st.base or 'meat'} in…{need}")
         else:
             self.hint.setText("Stabilising…")
+
+
+class TypedBaseScreen(Screen):
+    """A supervisor types the meat's weight instead of weighing it.
+
+    Reached from the capture screen through the PIN. Typed in kilograms, as
+    the meat is talked about, with the grams shown alongside so a slipped
+    decimal point is visible before it is used. Held to the same minimum as
+    weighing, and to a ceiling that catches 325 kg for 3.25 kg.
+
+    The meat was never on the scale, so there is nothing to take off: no
+    container swap. The batch goes straight to recipe review, the START
+    button there says the empty container has to be on first, and the record
+    says the meat weight was typed.
+    """
+
+    def build(self):
+        s = self.panel.scale
+        self.crumb = label("", "crumb")
+        self.box.addWidget(self.crumb)
+
+        body = QHBoxLayout()
+        body.setSpacing(int(18 * s))
+        col = QVBoxLayout()
+        self.headline = label("", "ingName")
+        col.addWidget(self.headline)
+        self.limits = label("", "target", wrap=True)
+        col.addWidget(self.limits)
+        col.addStretch(1)
+        self.entry = label("—", "bigAdd", Qt.AlignCenter)
+        col.addWidget(self.entry)
+        self.guide = label("", "guide", Qt.AlignCenter, wrap=True)
+        col.addWidget(self.guide)
+        col.addStretch(1)
+        body.addLayout(col, 1)
+
+        self.pad = NumericPad(s, self.on_typed)
+        self.pad.setMaximumWidth(int(300 * s))
+        body.addWidget(self.pad, 0)
+        self.box.addLayout(body, 1)
+
+        self.use_btn = button("USE THIS WEIGHT ▶", "good", self.panel.use_typed_base)
+        self.use_btn.setEnabled(False)
+        self.action_row((button("◀ BACK", "ghost",
+                                lambda: self.panel.show_screen("CAPTURE")), 1),
+                        (self.use_btn, 0))
+
+    def enter(self):
+        st, cfg = self.st, self.cfg
+        meat = st.base or "meat"
+        self.crumb.setText(f"Step 2 of 3 — <b>Type the {meat.lower()} weight</b>"
+                           f" · {cfg.product_name(st.product)}")
+        self.headline.setText(f"{meat.capitalize()} weight, in kg")
+        lo = cfg.min_base_for(st.product)
+        self.limits.setText(f"Not weighed — recorded as typed. "
+                            f"Between {fmt(lo)} and {fmt(cfg.main.usable_g)}.")
+        # Room for two lines of guidance. A word-wrapped label nested this
+        # deep is otherwise given one line's height and the rest is cut off.
+        self.guide.ensurePolished()
+        self.guide.setMinimumHeight(2 * self.guide.fontMetrics().lineSpacing() + 4)
+        self.pad.clear()
+
+    def set_tone(self, tone, text):
+        if self.guide.property("tone") != tone:
+            self.guide.setProperty("tone", tone)
+            restyle(self.guide)
+        self.guide.setText(text)
+
+    def grams(self):
+        kg = self.pad.value()
+        return None if kg is None else kg * 1000.0
+
+    def on_typed(self):
+        self.entry.setText(f"{self.pad.text} kg" if self.pad.text else "—")
+        g = self.grams()
+        if g is None or not self.pad.text:
+            self.set_tone("dead", "Type the weight in kilograms, e.g. 3.25")
+            self.use_btn.setEnabled(False)
+            return
+        problem = self.cfg.typed_base_problem(self.st.product, g)
+        if problem:
+            self.set_tone("over", f"{g:,.0f} g is {problem}.")
+            self.use_btn.setEnabled(False)
+            return
+        self.set_tone("ok", f"= {g:,.0f} g. Put the empty ingredient "
+                            f"container on the scale.")
+        self.use_btn.setEnabled(True)
 
 
 class SwapScreen(Screen):
@@ -795,6 +890,14 @@ class ReviewScreen(Screen):
         # A fixed batch skipped the weighing step, so it is two steps, not three.
         step = "Step 2 of 2" if fixed else "Step 3 of 3"
         kind = " · fixed batch, no meat" if fixed else ""
+        if self.st.base_typed and not fixed:
+            kind = f" · meat <b style='color:{AMBER}'>typed</b>, not weighed"
+        # Typed meat skipped the container swap, so nothing has checked the
+        # empty container is on. The first ingredient zeroes on whatever is
+        # there when START is pressed — say so on the button itself.
+        self.start_btn.setText("CONTAINER ON — START ADDING ▶"
+                               if self.st.base_typed and not fixed
+                               else "START ADDING ▶")
         self.crumb.setText(f"{step} — <b>Recipe review</b> · "
                            f"{self.cfg.product_name(self.st.product)}"
                            f"{kind}{water}{rb}")
@@ -1349,7 +1452,8 @@ class Panel(QMainWindow):
     SCREENS = {"HOME": HomeScreen, "CAPTURE": CaptureScreen, "SWAP": SwapScreen,
                "PRODUCT": ProductScreen, "REVIEW": ReviewScreen, "ADD": AddScreen,
                "MANUAL": ManualAddScreen, "DONE": DoneScreen, "MENU": MenuScreen,
-               "WATER": WaterRatioScreen, "MEAT": MeatTypeScreen}
+               "WATER": WaterRatioScreen, "MEAT": MeatTypeScreen,
+               "TYPED": TypedBaseScreen}
 
     def __init__(self, state, cfg, batches, daily, sim=None, scale=1.0):
         super().__init__()
@@ -1574,7 +1678,8 @@ class Panel(QMainWindow):
             if st.base:
                 bits.append(st.base)
             if st.base_wt:
-                bits.append(f"meat {fmt(st.base_wt)}")
+                bits.append(f"meat {fmt(st.base_wt)}"
+                            + (" (typed)" if st.base_typed else ""))
             self.info_lbl.setText(" · ".join(bits))
         else:
             self.info_lbl.setText("")
@@ -1645,10 +1750,30 @@ class Panel(QMainWindow):
         if not snap["fresh"] or snap["grams"] is None:
             return
         self.st.base_wt = snap["grams"]
+        self.st.base_typed = False
         # The meat comes off next and the ingredients go into a different
         # container, so there is a swap between weighing and adding.
         self.st.start_g = None
         self.show_screen("SWAP")
+
+    def open_typed_base(self):
+        """Skip weighing the meat: a supervisor types its weight instead."""
+        meat = (self.st.base or "meat").lower()
+        if self.ask_pin(f"Enter supervisor PIN to type the {meat} weight "
+                        f"instead of weighing it."):
+            self.show_screen("TYPED")
+
+    def use_typed_base(self):
+        """The typed weight stands in for a captured one. The meat never went
+        on the scale, so there is no swap: straight to recipe review, with the
+        zero taken when the first ingredient opens, as usual."""
+        g = self.screens["TYPED"].grams()
+        if g is None or self.cfg.typed_base_problem(self.st.product, g):
+            return                      # the screen already says why
+        self.st.base_wt = g
+        self.st.base_typed = True
+        self.st.start_g = None
+        self.pick_product(self.st.product)
 
     def confirm_swap(self):
         """Meat off, empty container on. Targets are computed from the meat
@@ -1918,6 +2043,9 @@ class Panel(QMainWindow):
             "batch": "fixed" if self.cfg.is_fixed_batch(st.product) else "per_meat",
             "base_weight_g": (None if self.cfg.is_fixed_batch(st.product)
                               else round(st.base_wt)),
+            # "typed" = a supervisor entered it behind the PIN; nothing weighed it.
+            "base_weight_source": (None if self.cfg.is_fixed_batch(st.product)
+                                   else "typed" if st.base_typed else "scale"),
             "rebalanced": st.rebalanced,
             # The reading the ingredients were weighed from — the empty
             # ingredient container. Negative is normal after a TARE on the

@@ -81,6 +81,7 @@ for free. For a console-only boot with no desktop, run it under
 | `tests/test_fixed_batch.py` | 23 checks: a whole Piri Piri Masala batch through the real panel |
 | `tests/test_swap.py` | 26 checks: the meat-off, empty-container-on swap, including negative readings after TARE |
 | `tests/test_papain.py` | 20 checks: the meat question and the papain step for buffalo, chicken and anything else |
+| `tests/test_typed_base.py` | 43 checks: typing the meat weight behind the PIN instead of weighing it, end to end at 800×480 |
 
 `scale.py` imports nothing from `panel.py` and knows nothing about Qt. That
 boundary is the point: the logic that decides what the weight *is* stays
@@ -191,6 +192,7 @@ reconnects on its own every 2 s until the port comes back.
 2. **Weigh the meat** — TARE the scale with the empty meat container, put the
    meat in. CAPTURE arms only when the reading is live, stable and above that
    recipe's own minimum batch (see below). *Skipped for a fixed batch.*
+   Or **TYPE WEIGHT (PIN)** — see "Typing the meat weight" below.
 3. **Swap containers** — the meat comes off and a different, empty container
    goes on for the ingredients. CONTINUE unlocks once the scale has seen the
    meat come off and the reading has settled. Because the scale was tared on
@@ -201,6 +203,25 @@ reconnects on its own every 2 s until the port comes back.
    the empty ingredient container, not from the meat.
 5. **Papain, last** (jerky only) — once every other ingredient is in, the
    station asks what the meat is (see below).
+
+### Typing the meat weight instead of weighing it
+
+On the weigh-the-meat screen, **TYPE WEIGHT (PIN)** lets a supervisor enter
+the meat's weight on a keypad. It works with the scale disconnected too.
+
+- Typed in **kilograms** (`3.25`), with the grams shown underneath so a
+  slipped decimal point is visible before it is used.
+- Held to the same minimum as weighing (500 g; Teriyaki 800 g) and refused
+  above the main scale's usable capacity (50 kg) — `325` for `3.25` is caught.
+- The meat never went on the scale, so there is **no container swap**: USE
+  THIS WEIGHT goes straight to recipe review. The review says *meat typed,
+  not weighed* and its button reads **CONTAINER ON — START ADDING**, because
+  the first ingredient zeroes on whatever is on the scale when it is pressed.
+- Targets and the papain amount are computed from the typed weight exactly
+  as from a weighed one.
+- The batch record carries `"base_weight_source": "typed"` (`"scale"` when
+  weighed, `null` for a fixed batch), and the consumption workbook's Batches
+  sheet has a **Meat weight** column showing typed in amber.
 
 ### Papain — the last step, by meat
 
@@ -338,6 +359,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_layout.py   # 35 — fits, and text
 QT_QPA_PLATFORM=offscreen python3 tests/test_fixed_batch.py  # 23 — Piri Piri Masala end to end
 QT_QPA_PLATFORM=offscreen python3 tests/test_swap.py     # 26 — the container swap
 QT_QPA_PLATFORM=offscreen python3 tests/test_papain.py   # 20 — papain by meat
+QT_QPA_PLATFORM=offscreen python3 tests/test_typed_base.py  # 43 — typed meat weight
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base

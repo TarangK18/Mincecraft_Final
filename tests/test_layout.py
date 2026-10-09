@@ -38,7 +38,7 @@ SIZES = [
 ]
 
 SCREENS = ["HOME", "CAPTURE", "SWAP", "PRODUCT", "REVIEW", "ADD", "MANUAL",
-           "MEAT", "DONE", "MENU", "WATER"]
+           "MEAT", "DONE", "MENU", "WATER", "TYPED"]
 
 checks = []
 
