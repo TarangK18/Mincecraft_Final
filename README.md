@@ -8,7 +8,13 @@ this is that firmware.
 scale --RS232--> USB/FTDI --> /dev/ttyUSB0 --> reader thread --> Qt panel
 ```
 
-One process. No server, no browser, no network.
+The station itself is one process: no server, no browser, no network.
+Finished batches reach the DOKI server through **`uploader.py`, a separate
+process** that only reads `batches.jsonl` — see "Sending batches to the
+server" below. The station works exactly the same with it stopped.
+
+**Version:** station `v1.0`, uploader `v1.0` (headers at the top of
+`station.py` and `uploader.py`; shown in the status bar and printed at start).
 
 ## Install on the Pi — once
 
@@ -82,6 +88,13 @@ for free. For a console-only boot with no desktop, run it under
 | `tests/test_swap.py` | 26 checks: the meat-off, empty-container-on swap, including negative readings after TARE |
 | `tests/test_papain.py` | 20 checks: the meat question and the papain step for buffalo, chicken and anything else |
 | `tests/test_typed_base.py` | 43 checks: typing the meat weight behind the PIN instead of weighing it, end to end at 800×480 |
+| `uploader.py` | separate process: sends each finished batch from `batches.jsonl` to the server |
+| `mincecraft-uploader.service` | systemd **user** unit template for the uploader |
+| `install-uploader.sh` | installs/starts the uploader service; creates `~/.config/mincecraft/api.env` from the template |
+| `api.env.example` | template for the key file. The real one is outside the repo; never commit a key |
+| `tests/test_uploader.py` | 40 tests: mapping of real station lines, UTC, identity, resend = duplicates, every server answer |
+| `tests/mock_ingest.py` | local stand-in for `/ingest` used by the tests |
+| `tests/bench_upload.py` / `bench_batches.jsonl` | live test against the real server (ids `bec40001-0..2`, sent 2026-10-21 — delete before go-live) |
 
 `scale.py` imports nothing from `panel.py` and knows nothing about Qt. That
 boundary is the point: the logic that decides what the weight *is* stays
@@ -360,6 +373,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_fixed_batch.py  # 23 — Piri Piri 
 QT_QPA_PLATFORM=offscreen python3 tests/test_swap.py     # 26 — the container swap
 QT_QPA_PLATFORM=offscreen python3 tests/test_papain.py   # 20 — papain by meat
 QT_QPA_PLATFORM=offscreen python3 tests/test_typed_base.py  # 43 — typed meat weight
+QT_QPA_PLATFORM=offscreen python3 tests/test_uploader.py    # 40 — the uploader, offline
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base
@@ -429,6 +443,88 @@ rebuilt from scratch after every batch:
 
 Nothing ever writes to the workbook directly, so it cannot drift from the log,
 and deleting it costs nothing: `python3 consumption.py` brings it back correct.
+
+## Sending batches to the server
+
+`uploader.py` runs as its own systemd **user** service and never inside the
+station. It reads `batches.jsonl` (read-only), and for every new **complete**
+line POSTs one `batch` message to `/ingest`, up to 50 per request. Its place
+in the file is `~/.local/state/mincecraft/upload.offset`, moved forward only
+after the server has answered.
+
+### Install (on the Pi, once)
+
+```bash
+cd ~/Mincecraft_Final
+git config core.fileMode false      # before pulling — see "file mode" below
+git pull
+bash install-uploader.sh            # creates ~/.config/mincecraft/api.env
+nano ~/.config/mincecraft/api.env   # replace PUT-THE-WRITE-KEY-HERE with the WRITE key
+systemctl --user restart mincecraft-uploader
+journalctl --user -u mincecraft-uploader -f
+```
+
+The key lives only in `~/.config/mincecraft/api.env` (mode 600). **This repo
+is public: never put a key in it, in `recipes.json`, or in any tracked
+file.** `api.env`, `*.env` are in `.gitignore`; `tests/test_uploader.py`
+fails if either real key appears anywhere in the folder. The read key never
+goes on the Pi.
+
+`python3 uploader.py --dry-run` prints exactly what would be sent and sends
+nothing. `bash install-uploader.sh --remove` stops and removes the service.
+
+### What is sent
+
+| message | from `batches.jsonl` |
+|---|---|
+| `device` | `MINCECRAFT_DEVICE` in api.env (`weigh-1`) |
+| `boot_id` | 8 hex, made once, kept in `~/.config/mincecraft/uploader.json` |
+| `seq` | 0-based line number |
+| `ts` | `finished_at` |
+| `data.batch_id` | `<boot_id>-<seq>` — the same line always gives the same id |
+| `data.product` | the product's name from `recipes.json` (id if unknown) |
+| `data.batch_type` | `batch` (`per_meat` / `fixed`) |
+| `data.base_weight_g` | `base_weight_g` as an integer; null for fixed |
+| `data.base_source` | `base_weight_source` (`scale` / `typed`); null for fixed |
+| `data.meat_type` | `meat_type` |
+| `data.started_at` / `finished_at` | `started_at` / `logged_at`, converted to UTC `…Z` |
+| `steps[].step_no` | 1..n in the order they were added |
+| `steps[].measured` | false for small-scale steps (`assumed`) and skipped steps |
+| `steps[].actual_g` | the recorded weight; a skipped step (no weight) goes as `0` — the server rejects null |
+
+**Time.** The station writes local time with its offset (`+0530`), which
+converts to UTC exactly. The Pi has no RTC, so each batch line now records
+`clock_synced` — true only if the clock was NTP-synced (systemd-timesyncd /
+`timedatectl`) both when the batch started and when it was logged. When it is
+false, or missing (lines written before v1.0), `ts`, `started_at` and
+`finished_at` are sent as **null**. A guessed time is never sent.
+
+**Resending is safe.** The server ignores a `batch_id` it already has, so
+losing the offset file only means everything is sent again as duplicates.
+A new `boot_id` is made only if `batches.jsonl` is reset or replaced (its
+first line changes, or it gets shorter than the offset).
+
+### Server answers
+
+| answer | what the uploader does |
+|---|---|
+| 200 / 207 / 422 | moves on. Every rejected batch is logged with the server's `error` and the full line — it would never be accepted unchanged |
+| 413 | splits the request; a single batch still too large is logged and skipped |
+| 5xx, 429, timeout, no network | keeps its place, retries 5 s → 10 s → … → 5 min |
+| 400 | a bug in the uploader: logged, keeps its place, retries every 5 min |
+| 401 / 403 / 404 | wrong key / URL: logged, keeps its place, re-reads api.env every 5 min |
+
+Logs: `journalctl --user -u mincecraft-uploader` and
+`~/.local/state/mincecraft/uploader.log` (keeps the full original line of
+every batch sent).
+
+### File mode
+
+`install-pi.sh` once ran `chmod +x` inside the clone, which git counts as a
+local edit — `git pull` then refuses to update `station.py`, which this
+version changes. Run `git config core.fileMode false` in the clone **before**
+`git pull`. `install-uploader.sh` sets it too, and itself is run with `bash`,
+not made executable.
 
 ## Two scales
 

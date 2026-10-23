@@ -14,6 +14,8 @@ C++ so the test harness can lift it out verbatim.
 import json
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -376,6 +378,35 @@ class BatchLog:
             except json.JSONDecodeError:
                 pass
         return out
+
+
+# ------------------------------------------------------------- clock sync
+
+TIMESYNC_FLAG = "/run/systemd/timesync/synchronized"
+
+
+def clock_synced():
+    """True only when the system clock is known to be right (NTP-synced).
+
+    The Pi has no real-time clock: after a boot without network it starts
+    from whatever time it last saved, and every timestamp until NTP succeeds
+    is a guess. systemd-timesyncd touches TIMESYNC_FLAG on its first good
+    sync; failing that, timedatectl reports the kernel's own sync state.
+    Anything uncertain — not Linux, no systemd, a slow D-Bus — is False,
+    because a batch marked unsynced only loses its times upstream, while a
+    wrong time marked synced is silently believed.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    if os.path.exists(TIMESYNC_FLAG):
+        return True
+    try:
+        out = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=2)
+        return out.returncode == 0 and out.stdout.strip() == "yes"
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 # ------------------------------------------------------------------ config

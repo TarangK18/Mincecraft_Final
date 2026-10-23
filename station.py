@@ -1,14 +1,39 @@
 #!/usr/bin/env python3
 """
-DOKI weighing station — entry point.
+DOKI weighing station (MINCECRAFT) — entry point.
+
+THIS VERSION: v1.0 (2026-10-21)
+
+What it does now, as a whole:
+  - Reads the main scale (RS232, 9600 8N1, /dev/ttyUSB0) on its own thread;
+    the PyQt5 panel polls it every 100 ms and dims any reading older than 2 s.
+  - Runs one batch at a time on the 7-inch touchscreen: pick the product,
+    weigh the meat (or type its weight behind the supervisor PIN), swap to the
+    empty ingredient container, review every target, weigh each ingredient
+    with auto-advance in tolerance, papain last by meat type for jerky.
+    Piri Piri Masala is a fixed batch with no meat.
+  - Writes one line per finished batch to batches.jsonl (append-only), now
+    including "clock_synced" — whether the clock was NTP-synced at both start
+    and finish — and rebuilds consumption.xlsx from it.
+  - On failure: a dead or unplugged scale shows NO SCALE / STALE and disables
+    weighing; the reader reconnects every 2 s. Nothing is lost from the log.
+  - What it does NOT do: no network at all. Sending batches to the server is
+    uploader.py, a separate process (systemd user service) that only reads
+    batches.jsonl. The station works the same with or without it.
 
   python3 station.py                    # real scale on /dev/ttyUSB0, fullscreen
   python3 station.py --sim              # simulated scale, on-screen +/- buttons
   python3 station.py --windowed         # windowed, for development
   python3 station.py --port /dev/ttyUSB1
 
-One process: a reader thread owns the serial port, the Qt panel polls it.
-No server, no browser, no network.
+CHANGES (newest first)
+  v1.0  2026-10-21  First versioned release. Adds "clock_synced" and
+                    "station_version" to each batch line so the uploader never
+                    sends a guessed time (the Pi has no RTC). Version shown in
+                    the status bar and printed at start. Includes everything
+                    before versioning: typed meat weight (10-08), papain by
+                    meat, container swap, 4 g routing, larger text (09-25),
+                    Piri Piri Masala fixed batch, 800x480 scaling (09-24).
 """
 
 import argparse
@@ -18,6 +43,8 @@ import sys
 from scale import BatchLog, Config, DailyRatio, ScaleState, SimScale, start_reader
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+FW_VERSION = "v1.0"
 
 
 def main(argv=None):
@@ -33,7 +60,10 @@ def main(argv=None):
     ap.add_argument("--recipes", default=os.path.join(HERE, "recipes.json"))
     ap.add_argument("--batch-log", default=os.path.join(HERE, "batches.jsonl"))
     ap.add_argument("--daily", default=os.path.join(HERE, "daily.json"))
+    ap.add_argument("--version", action="version",
+                    version=f"MINCECRAFT station {FW_VERSION}")
     args = ap.parse_args(argv)
+    print(f"MINCECRAFT weighing station {FW_VERSION}")
 
     if args.demo:
         # A demo should not touch the real batch log, and should not stop at
@@ -98,7 +128,8 @@ def main(argv=None):
           f"(usable {avail.width()}x{avail.height()}) -> panel {w}x{h}, "
           f"scale {factor:.3f}")
 
-    window = Panel(state, cfg, batches, daily, sim=sim, scale=factor)
+    window = Panel(state, cfg, batches, daily, sim=sim, scale=factor,
+                   version=FW_VERSION)
     if args.windowed:
         window.resize(w, h)
         window.show()

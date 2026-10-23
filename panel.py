@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QLabel, QMainWindow, QPushButton, QSizePolicy, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from scale import MAIN, PAPAIN_MEATS, SMALL, fmt, fmt_g
+from scale import MAIN, PAPAIN_MEATS, SMALL, clock_synced, fmt, fmt_g
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -84,6 +84,7 @@ class BatchState:
     start_g: float = None         # reading when the first ingredient opened
     meat_type: str = None         # asked at the end: buffalo / chicken / other
     base_typed: bool = False      # meat weight typed in by a supervisor, not weighed
+    clock_synced_start: bool = None  # was the clock NTP-synced when started_at was taken
 
     def reset(self):
         self.base = None
@@ -98,6 +99,7 @@ class BatchState:
         self.start_g = None
         self.meat_type = None
         self.base_typed = False
+        self.clock_synced_start = None
 
 
 # ------------------------------------------------------------------ widgets
@@ -1455,8 +1457,13 @@ class Panel(QMainWindow):
                "WATER": WaterRatioScreen, "MEAT": MeatTypeScreen,
                "TYPED": TypedBaseScreen}
 
-    def __init__(self, state, cfg, batches, daily, sim=None, scale=1.0):
+    def __init__(self, state, cfg, batches, daily, sim=None, scale=1.0,
+                 version=""):
         super().__init__()
+        self.version = version
+        # How the panel asks whether the clock can be trusted. An attribute so
+        # tests can answer for it; the real one shells out at most twice a batch.
+        self.clock_check = clock_synced
         self.state = state
         self.cfg = cfg
         self.batches = batches
@@ -1491,6 +1498,10 @@ class Panel(QMainWindow):
         hb = QHBoxLayout(bar)
         hb.setContentsMargins(*[int(n * self.scale) for n in (14, 8, 14, 8)])
         self.name_lbl = label("MINCECRAFT", "stationName")
+        if self.version:
+            self.name_lbl.setText(
+                f"MINCECRAFT <span style='color:{MUTED}; letter-spacing:0px'>"
+                f"{self.version}</span>")
         self.info_lbl = label("", align=Qt.AlignCenter)
         self.link_lbl = label("CONNECTING…", "link", Qt.AlignRight)
         self.link_lbl.setProperty("state", "down")
@@ -1718,6 +1729,9 @@ class Panel(QMainWindow):
         if self.cfg.any_water_gated and not self.daily.is_set():
             return                      # the home screen already says why
         self.st.started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        # The Pi has no real-time clock. Whether this time can be believed is
+        # recorded beside it, and checked again at the end of the batch.
+        self.st.clock_synced_start = bool(self.clock_check())
         # Captured now, so a batch that starts at 23:55 finishes on the ratio
         # it began with even though the day rolls over mid-batch.
         self.st.water_ratio = self.daily.ratio()
@@ -2054,6 +2068,11 @@ class Panel(QMainWindow):
             # Asked at the end of a jerky batch; decides the papain step.
             "meat_type": st.meat_type,
             "started_at": st.started_at,
+            # True only if the clock was NTP-synced both when the batch started
+            # and now, as it is logged. False means started_at / logged_at may
+            # be wrong; the uploader then sends no times at all.
+            "clock_synced": bool(st.clock_synced_start) and bool(self.clock_check()),
+            "station_version": self.version or None,
             "water_ratio": st.water_ratio,
             "production_day": self.daily.production_day(),
             "steps": [{"name": s.name,

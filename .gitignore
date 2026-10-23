@@ -4,9 +4,18 @@ batches.jsonl
 daily.json
 consumption.xlsx
 
+# The uploader's key file belongs in ~/.config/mincecraft/, never here. If a
+# copy is ever dropped into this folder, keep it out of the public repo.
+api.env
+*.env
+uploader.json
+upload.offset
+uploader.log
+
 # Left behind if a test run is interrupted
 _test_*.jsonl
 _test_daily.json
+_test_upload*/
 screenshots/_layout_*
 
 # Excel's lock file, created whenever a workbook is open
