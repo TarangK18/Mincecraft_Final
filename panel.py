@@ -19,7 +19,8 @@ from PyQt5.QtWidgets import (
     QLabel, QMainWindow, QPushButton, QSizePolicy, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from scale import MAIN, PAPAIN_MEATS, SMALL, clock_synced, fmt, fmt_g
+from scale import (MAIN, PAPAIN_MEATS, SMALL, Config, clock_synced, fmt,
+                   fmt_g, read_update_status)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -454,6 +455,11 @@ class HomeScreen(Screen):
         self.box.addWidget(self.prompt)
         self.ratio_line = label("", "guide", Qt.AlignCenter, wrap=True)
         self.box.addWidget(self.ratio_line)
+        # What the updater last did: recipes synced, a rejected workbook, a
+        # code update rolled back. Shown only here, between batches.
+        self.update_line = label("", "notice", Qt.AlignCenter, wrap=True)
+        self.update_line.setVisible(False)
+        self.box.addWidget(self.update_line)
         self.box.addStretch(1)
         self.start_btn = button("START BATCH", "primary", self.panel.start_batch)
         self.water_btn = button("SET TODAY'S WATER RATIO", "warn",
@@ -493,6 +499,14 @@ class HomeScreen(Screen):
             self.ratio_line.setProperty("tone", tone)
             restyle(self.ratio_line)
         self.ratio_line.setText(text)
+
+        tone, text = self.panel.update_notice()
+        self.update_line.setVisible(bool(text))
+        if text:
+            if self.update_line.property("tone") != tone:
+                self.update_line.setProperty("tone", tone)
+                restyle(self.update_line)
+            self.update_line.setText(text)
 
 
 class WaterRatioScreen(Screen):
@@ -1458,9 +1472,18 @@ class Panel(QMainWindow):
                "TYPED": TypedBaseScreen}
 
     def __init__(self, state, cfg, batches, daily, sim=None, scale=1.0,
-                 version=""):
+                 version="", recipes_path=None, status_path=None,
+                 start_note=None):
         super().__init__()
         self.version = version
+        # Recipes synced by updater.py: watched, and picked up on the HOME
+        # screen only — never while a batch is open. None = not watched.
+        self.recipes_path = recipes_path
+        self.status_path = status_path
+        self._recipes_mtime = self._mtime(recipes_path)
+        self._next_check = 0.0
+        self._status = {}
+        self.recipe_note = start_note    # station-side news, e.g. "updated"
         # How the panel asks whether the clock can be trusted. An attribute so
         # tests can answer for it; the real one shells out at most twice a batch.
         self.clock_check = clock_synced
@@ -1710,7 +1733,73 @@ class Panel(QMainWindow):
 
         self._paint_sim()
         if not self.dialog_open:
+            if self.current == "HOME" and time.monotonic() >= self._next_check:
+                self._next_check = time.monotonic() + 5.0
+                self.check_recipes()
             self.screens[self.current].tick(snap, live)
+
+    # -- recipes synced from the owner's workbook ------------------------------
+
+    @staticmethod
+    def _mtime(path):
+        try:
+            return os.stat(path).st_mtime_ns if path else None
+        except OSError:
+            return None
+
+    def idle(self):
+        """No batch in progress: the only time recipes may change."""
+        return self.current == "HOME" and not self.st.product and not self.st.steps
+
+    def check_recipes(self):
+        """Pick up a newer synced recipes file, if it is valid and nothing is
+        being weighed. Returns True if the recipes changed."""
+        if self.status_path:
+            self._status = read_update_status(self.status_path)
+        if not self.recipes_path or not self.idle():
+            return False
+        mtime = self._mtime(self.recipes_path)
+        if mtime is None or mtime == self._recipes_mtime:
+            return False
+        self._recipes_mtime = mtime
+        cfg, why = Config.load_checked(self.recipes_path)
+        if cfg is None:
+            self.recipe_note = ("warn", f"New recipes not loaded ({why}) — "
+                                        f"still using the previous ones.")
+            return False
+        if cfg.data == self.cfg.data:
+            return False
+        self.cfg = cfg
+        for s in self.screens.values():
+            s.cfg = cfg
+        self.recipe_note = ("ok", f"Recipes updated {time.strftime('%d %b %H:%M')}.")
+        print(f"recipes reloaded from {self.recipes_path} "
+              f"(commit {cfg.synced_from or 'repo'})", flush=True)
+        return True
+
+    def update_notice(self):
+        """(tone, text) for the HOME screen, most important first."""
+        st = self._status
+        code, rec = st.get("code") or {}, st.get("recipes") or {}
+        rb = code.get("rolled_back")
+        if rb:
+            return "warn", (f"Software update {str(rb.get('from'))[:7]} failed to "
+                            f"start — back on {str(rb.get('to'))[:7]}.")
+        if rec.get("ok") is False and rec.get("rejected"):
+            why = str(rec["rejected"].get("why", ""))
+            why = why if len(why) <= 110 else why[:107] + "…"
+            return "warn", f"Recipe update rejected: {why} Using the last good recipes."
+        skipped = rec.get("skipped_sheets") or []
+        if skipped and self.cfg.synced_from == rec.get("commit"):
+            names = ", ".join(x.get("sheet", "?") for x in skipped[:3])
+            return "warn", (f"Not used from the workbook (has a problem): {names}. "
+                            f"Previous recipe kept.")
+        if self.recipe_note:
+            return self.recipe_note
+        if self.cfg.synced_from:
+            when = str((self.cfg.data.get("_sync") or {}).get("applied_at", ""))[:16]
+            return "ok", f"Recipes from the workbook on GitHub ({when.replace('T', ' ')})."
+        return "ok", ""
 
     def _dialog(self, dlg):
         """Run a modal dialog with the screen tick suspended."""
@@ -2073,6 +2162,10 @@ class Panel(QMainWindow):
             # be wrong; the uploader then sends no times at all.
             "clock_synced": bool(st.clock_synced_start) and bool(self.clock_check()),
             "station_version": self.version or None,
+            # Which recipe this batch was made to: same ingredients and
+            # quantities = same id. And where the recipes came from.
+            "recipe_version": self.cfg.recipe_version(st.product),
+            "recipes_commit": self.cfg.synced_from,
             "water_ratio": st.water_ratio,
             "production_day": self.daily.production_day(),
             "steps": [{"name": s.name,

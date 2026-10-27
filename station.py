@@ -2,7 +2,7 @@
 """
 DOKI weighing station (MINCECRAFT) — entry point.
 
-THIS VERSION: v1.0 (2026-10-21)
+THIS VERSION: v1.1 (2026-10-27)
 
 What it does now, as a whole:
   - Reads the main scale (RS232, 9600 8N1, /dev/ttyUSB0) on its own thread;
@@ -12,14 +12,23 @@ What it does now, as a whole:
     empty ingredient container, review every target, weigh each ingredient
     with auto-advance in tolerance, papain last by meat type for jerky.
     Piri Piri Masala is a fixed batch with no meat.
-  - Writes one line per finished batch to batches.jsonl (append-only), now
-    including "clock_synced" — whether the clock was NTP-synced at both start
-    and finish — and rebuilds consumption.xlsx from it.
+  - Recipes: starts with the recipes synced from the owner's workbook
+    (~/.local/share/mincecraft/recipes.json, written by updater.py) if that
+    file is valid, otherwise the repo's recipes.json. While on the HOME
+    screen with no batch open it checks every 5 s for a newer synced file and
+    switches to it — never mid-batch. HOME shows what the updater last did
+    (recipes updated, a rejected workbook, a rolled-back software update).
+  - Writes one line per finished batch to batches.jsonl (append-only),
+    including "clock_synced" (NTP-synced at both start and finish),
+    "recipe_version" (id of the exact recipe used) and "recipes_commit", and
+    rebuilds consumption.xlsx from it.
+  - Starts by itself after a reboot (desktop auto-login + autostart, set up
+    by install-pi.sh); mincecraft.sh runs updater.py first.
   - On failure: a dead or unplugged scale shows NO SCALE / STALE and disables
     weighing; the reader reconnects every 2 s. Nothing is lost from the log.
   - What it does NOT do: no network at all. Sending batches to the server is
-    uploader.py, a separate process (systemd user service) that only reads
-    batches.jsonl. The station works the same with or without it.
+    uploader.py, and fetching recipes / code is updater.py — separate
+    processes. The station works the same with or without them.
 
   python3 station.py                    # real scale on /dev/ttyUSB0, fullscreen
   python3 station.py --sim              # simulated scale, on-screen +/- buttons
@@ -27,6 +36,12 @@ What it does now, as a whole:
   python3 station.py --port /dev/ttyUSB1
 
 CHANGES (newest first)
+  v1.1  2026-10-27  Recipes follow the owner's workbook on GitHub: uses the
+                    synced recipes file when valid, reloads it between
+                    batches, shows update news on HOME, records
+                    recipe_version / recipes_commit per batch. Opens at boot.
+                    Why: the owner's repo becomes the master copy and his
+                    recipe edits must reach the Pi without anyone touching it.
   v1.0  2026-10-21  First versioned release. Adds "clock_synced" and
                     "station_version" to each batch line so the uploader never
                     sends a guessed time (the Pi has no RTC). Version shown in
@@ -40,11 +55,12 @@ import argparse
 import os
 import sys
 
-from scale import BatchLog, Config, DailyRatio, ScaleState, SimScale, start_reader
+from scale import (LOCAL_RECIPES, UPDATE_STATUS, BatchLog, Config, DailyRatio,
+                   ScaleState, SimScale, pick_recipes, start_reader)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-FW_VERSION = "v1.0"
+FW_VERSION = "v1.1"
 
 
 def main(argv=None):
@@ -57,7 +73,9 @@ def main(argv=None):
                          "scratch log files — for trying the flow end to end "
                          "with no hardware and nothing to clean up afterwards")
     ap.add_argument("--windowed", action="store_true", help="do not go fullscreen")
-    ap.add_argument("--recipes", default=os.path.join(HERE, "recipes.json"))
+    ap.add_argument("--recipes", default=None,
+                    help="recipes file (default: the synced one if valid, "
+                         "else the repo's recipes.json)")
     ap.add_argument("--batch-log", default=os.path.join(HERE, "batches.jsonl"))
     ap.add_argument("--daily", default=os.path.join(HERE, "daily.json"))
     ap.add_argument("--version", action="version",
@@ -75,6 +93,18 @@ def main(argv=None):
         args.batch_log = os.path.join(scratch, "batches.jsonl")
         args.daily = os.path.join(scratch, "daily.json")
 
+    start_note = None
+    watch = None
+    if args.recipes is None and not args.demo:
+        args.recipes, why = pick_recipes(os.path.join(HERE, "recipes.json"),
+                                         LOCAL_RECIPES)
+        watch = LOCAL_RECIPES                  # pick up newer syncs later
+        if why:
+            print(why)
+            start_note = ("warn", why[0].upper() + why[1:] + ".")
+    elif args.recipes is None:
+        args.recipes = os.path.join(HERE, "recipes.json")
+    print(f"recipes: {args.recipes}")
     cfg = Config.load(args.recipes)
     state = ScaleState(stable_band_g=2 * cfg.main.division_g)
     batches = BatchLog(args.batch_log)
@@ -129,7 +159,9 @@ def main(argv=None):
           f"scale {factor:.3f}")
 
     window = Panel(state, cfg, batches, daily, sim=sim, scale=factor,
-                   version=FW_VERSION)
+                   version=FW_VERSION, recipes_path=watch,
+                   status_path=None if args.demo else UPDATE_STATUS,
+                   start_note=start_note)
     if args.windowed:
         window.resize(w, h)
         window.show()

@@ -13,8 +13,12 @@ Finished batches reach the DOKI server through **`uploader.py`, a separate
 process** that only reads `batches.jsonl` — see "Sending batches to the
 server" below. The station works exactly the same with it stopped.
 
-**Version:** station `v1.0`, uploader `v1.0` (headers at the top of
-`station.py` and `uploader.py`; shown in the status bar and printed at start).
+Recipes and code updates come from GitHub through **`updater.py`**, also a
+separate process — see "Updates from GitHub" below.
+
+**Versions:** station `v1.1`, uploader `v1.0`, updater `v1.0` (headers at the
+top of `station.py`, `uploader.py`, `updater.py`; the station's version is in
+the status bar and every program prints its version at start).
 
 ## Install on the Pi — once
 
@@ -22,16 +26,25 @@ Copy this folder anywhere on the Pi, open a terminal **on the Pi's own
 screen**, and run:
 
 ```bash
-bash install-pi.sh               # icon on the desktop and in the menu
-bash install-pi.sh --autostart   # ...and open the station at every login
+bash install-pi.sh                 # everything (opens at boot)
+bash install-pi.sh --no-autostart  # ...but don't open at boot
 ```
 
 Run it as your normal user, not with `sudo` — it asks for sudo itself. It
 installs the packages, adds you to `dialout` so the app can open the scale's
-port, and writes a **MINCECRAFT Station** icon on the desktop plus
-**MINCECRAFT Station** and **MINCECRAFT Demo** in the menu, all pointing at
-wherever the folder actually is. Log out and back in once afterwards so the
-`dialout` group takes effect.
+port, writes a **MINCECRAFT Station** icon on the desktop plus
+**MINCECRAFT Station** and **MINCECRAFT Demo** in the menu, and:
+
+- **opens the station at boot**: desktop auto-login (`raspi-config` B4) plus
+  an autostart entry — both are needed;
+- turns **screen blanking off**, so a tap to wake the screen can't press a
+  button;
+- starts the **recipe sync** timer (every 5 min) — see "Updates from GitHub";
+- sets `git config core.fileMode false` and no longer marks anything
+  executable, so `git pull` never refuses over a chmod again.
+
+Reboot once afterwards (auto-login, blanking and the `dialout` group all take
+effect at the next login).
 
 From then on it is **double-click the icon**. The icon runs `mincecraft.sh`,
 which:
@@ -67,8 +80,8 @@ for free. For a console-only boot with no desktop, run it under
 | `scale.py` | the scale: parsing, de-dup, stability, reader, batch log, config. No Qt. |
 | `panel.py` | the whole UI: screens, dialogs, custom widgets |
 | `station.py` | entry point — arg parsing, measuring the screen, fullscreen launch |
-| `install-pi.sh` | one-time Pi setup: packages, serial access, desktop and menu icons |
-| `mincecraft.sh` | what the icon runs: single instance, logging, error box on failure |
+| `install-pi.sh` | one-time Pi setup: packages, serial access, icons, open at boot, blanking off, recipe-sync timer |
+| `mincecraft.sh` | what the icon and autostart run (`bash mincecraft.sh`): update check, single instance, logging, rollback, error box on failure |
 | `mincecraft.png` | the icon |
 | `check_display.py` | reports the screen size and the scale factor the panel will use |
 | `style.qss` | MINCECRAFT palette; `{N}px` sizes scale with the display |
@@ -94,6 +107,9 @@ for free. For a console-only boot with no desktop, run it under
 | `api.env.example` | template for the key file. The real one is outside the repo; never commit a key |
 | `tests/test_uploader.py` | 40 tests: mapping of real station lines, UTC, identity, resend = duplicates, every server answer |
 | `tests/mock_ingest.py` | local stand-in for `/ingest` used by the tests |
+| `updater.py` | separate process: recipes from the owner's workbook (every 5 min), code from branch `stable` at start, with rollback |
+| `mincecraft-recipes.service` / `.timer` | systemd **user** units that run the recipe sync every 5 minutes |
+| `tests/test_updater.py` | 18 tests: a throw-away origin repo; recipe sync, rejection, offline, stable/rollback, the real launcher, no mid-batch reload |
 | `tests/bench_upload.py` / `bench_batches.jsonl` | live test against the real server (ids `bec40001-0..2`, sent 2026-10-21 — delete before go-live) |
 
 `scale.py` imports nothing from `panel.py` and knows nothing about Qt. That
@@ -374,6 +390,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_swap.py     # 26 — the container 
 QT_QPA_PLATFORM=offscreen python3 tests/test_papain.py   # 20 — papain by meat
 QT_QPA_PLATFORM=offscreen python3 tests/test_typed_base.py  # 43 — typed meat weight
 QT_QPA_PLATFORM=offscreen python3 tests/test_uploader.py    # 40 — the uploader, offline
+QT_QPA_PLATFORM=offscreen python3 tests/test_updater.py     # 18 — recipe sync, stable + rollback, boot
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base
@@ -443,6 +460,71 @@ rebuilt from scratch after every batch:
 
 Nothing ever writes to the workbook directly, so it cannot drift from the log,
 and deleting it costs nothing: `python3 consumption.py` brings it back correct.
+
+## Updates from GitHub
+
+The Pi follows **the owner's repo** (its `origin`). Two different things come
+from it, on purpose differently:
+
+| | Recipes | Code |
+|---|---|---|
+| comes from | `DOKI-Recipes.xlsx` + `recipes.json` on branch **`main`** | branch **`stable`** only |
+| when | every 5 min (timer) and at every station start | at station start only |
+| applied | between batches, on the HOME screen — never mid-batch | before the station opens |
+| if it's broken | rejected; the last good recipes stay; HOME says why | rolled back automatically if the station fails in its first 2 minutes |
+
+**The owner changing a recipe:** open `DOKI-Recipes.xlsx` in Excel, change the
+weights, save, and upload it to the repo on GitHub with the same name
+(*Add file → Upload files*, commit to `main`). Within about 5 minutes the Pi
+converts and checks it; the next time the station is on HOME it switches over
+and says "Recipes updated". A sheet with a mistake (an empty or non-number
+weight, a row neither scale can weigh) is skipped — that product keeps its
+previous recipe and HOME names the sheet. A change that would make the
+recipes unusable as a whole is rejected and HOME says why. Every batch line
+records `recipe_version` and `recipes_commit`, so it is always known which
+recipe a batch was made to. The PIN, scales and papain settings come from
+`recipes.json` on `main` the same way.
+
+**Releasing new code:** test it, then move `stable` to it:
+
+```bash
+git push origin main:stable        # the Pi takes it at its next start
+```
+
+Pushing to `main` alone never changes the Pi's code. If the new code fails to
+start, the Pi goes back to the last code that ran, marks the failed commit so
+it is never tried again, and HOME shows "Software update … failed to start".
+Push a fixed commit to `stable` and it is tried at the next start. Until a
+`stable` branch exists, code updates are simply off.
+
+**What the updater will not do:** update code from `main`, apply anything
+mid-batch, install packages (new code that needs one must say so in its
+notes — the rollback catches a crash, not a missing feature), or overwrite
+files edited by hand on the Pi (code updates pause, HOME says so).
+
+**Handing over to the owner's repo:**
+
+```bash
+cd ~/Mincecraft_Final
+git remote set-url origin https://github.com/<owner>/<repo>.git
+git fetch origin
+```
+
+and, once, on the owner's repo: `git push origin main:stable`. It works with
+a public repo as is; a private one would need a read-only deploy key on the Pi.
+
+Where things are on the Pi:
+
+| | |
+|---|---|
+| synced recipes | `~/.local/share/mincecraft/recipes.json` (outside the repo — the clone stays clean) |
+| status (what HOME shows) | `~/.local/state/mincecraft/update.json` — `python3 updater.py --status` |
+| log | `~/.local/state/mincecraft/updater.log` and `station.log` |
+| timer | `systemctl --user list-timers mincecraft-recipes.timer` |
+| sync now | `python3 updater.py --recipes` |
+
+No network at boot is normal (Wi-Fi still coming up): the station waits at
+most ~15 s, then opens with what it has, and the timer catches up.
 
 ## Sending batches to the server
 

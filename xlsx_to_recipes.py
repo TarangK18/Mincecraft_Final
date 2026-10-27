@@ -109,6 +109,34 @@ def read_sheet(ws):
     return product, problems
 
 
+def convert(workbook, cfg):
+    """Merge the workbook's complete sheets into a copy of `cfg` (a parsed
+    recipes.json). Returns (cfg, ready, skipped, added, updated).
+
+    A sheet with problems is skipped and the product keeps what `cfg` already
+    had for it — one unfinished sheet never takes the other recipes down.
+    Used by main() and by updater.py, which syncs the owner's workbook.
+    """
+    cfg = json.loads(json.dumps(cfg))          # never touch the caller's copy
+    wb = openpyxl.load_workbook(workbook, data_only=True)
+    ready, skipped = [], []
+    for title in wb.sheetnames:
+        if title in SKIP:
+            continue
+        product, problems = read_sheet(wb[title])
+        if problems:
+            skipped.append((title, problems))
+        else:
+            ready.append(product)
+    by_id = {p["id"]: p for p in cfg.get("products", [])}
+    added, updated = [], []
+    for p in ready:
+        (updated if p["id"] in by_id else added).append(p["name"])
+        by_id[p["id"]] = p
+    cfg["products"] = list(by_id.values())
+    return cfg, ready, skipped, added, updated
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -120,19 +148,9 @@ def main(argv=None):
                     help="report what would change without writing")
     args = ap.parse_args(argv)
 
-    wb = openpyxl.load_workbook(args.workbook, data_only=True)
     with open(args.recipes, "r", encoding="utf-8") as fh:
         cfg = json.load(fh)
-
-    ready, skipped = [], []
-    for title in wb.sheetnames:
-        if title in SKIP:
-            continue
-        product, problems = read_sheet(wb[title])
-        if problems:
-            skipped.append((title, problems))
-        else:
-            ready.append(product)
+    cfg, ready, skipped, added, updated = convert(args.workbook, cfg)
 
     for title, problems in skipped:
         print(f"skipped {title}:")
@@ -142,13 +160,6 @@ def main(argv=None):
     if not ready:
         print("\nNothing to write — no sheet is complete.")
         return 1
-
-    by_id = {p["id"]: p for p in cfg.get("products", [])}
-    added, updated = [], []
-    for p in ready:
-        (updated if p["id"] in by_id else added).append(p["name"])
-        by_id[p["id"]] = p
-    cfg["products"] = list(by_id.values())
 
     print(f"\nready: {len(ready)} recipe(s)")
     for p in ready:

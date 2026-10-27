@@ -11,6 +11,7 @@ panel. Same split as doki_probe.ino, where the cook state machine is plain
 C++ so the test harness can lift it out verbatim.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,16 @@ import time
 from collections import deque
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Where updater.py puts recipes synced from the owner's workbook, and where it
+# reports how that went. Outside the repo, so syncing never dirties the clone.
+_HOME = os.path.expanduser("~")
+LOCAL_RECIPES = os.path.join(os.environ.get("XDG_DATA_HOME") or
+                             os.path.join(_HOME, ".local", "share"),
+                             "mincecraft", "recipes.json")
+UPDATE_STATUS = os.path.join(os.environ.get("XDG_STATE_HOME") or
+                             os.path.join(_HOME, ".local", "state"),
+                             "mincecraft", "update.json")
 
 # ---------------------------------------------------------------- constants
 
@@ -380,6 +391,29 @@ class BatchLog:
         return out
 
 
+def read_update_status(path=None):
+    """What updater.py last reported (update.json), or {} if nothing yet."""
+    try:
+        with open(path or UPDATE_STATUS, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def pick_recipes(repo_path=None, local_path=None):
+    """Which recipes file the station starts with: the synced one if it
+    loads and validates, otherwise the repo's own. Returns (path, note)."""
+    repo_path = repo_path or os.path.join(HERE, "recipes.json")
+    local_path = local_path or LOCAL_RECIPES
+    if os.path.exists(local_path):
+        cfg, why = Config.load_checked(local_path)
+        if cfg is not None:
+            return local_path, None
+        return repo_path, f"synced recipes unusable ({why}) — using the repo's"
+    return repo_path, None
+
+
 # ------------------------------------------------------------- clock sync
 
 TIMESYNC_FLAG = "/run/systemd/timesync/synchronized"
@@ -485,6 +519,35 @@ class Config:
         path = path or os.path.join(HERE, "recipes.json")
         with open(path, "r", encoding="utf-8") as fh:
             return cls(json.load(fh))
+
+    @classmethod
+    def load_checked(cls, path):
+        """(Config, None) if the file loads and validates, else (None, why)."""
+        try:
+            cfg = cls.load(path)
+        except FileNotFoundError:
+            return None, "not found"
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            return None, f"{type(e).__name__}: {e}"
+        problems = cfg.validate_products()
+        if problems:
+            return None, "; ".join(problems[:3])
+        return cfg, None
+
+    def recipe_version(self, product_id):
+        """Short stable id of one product's recipe as used for a batch: the
+        same ingredients and quantities always give the same id."""
+        p = next((x for x in self.products if x["id"] == product_id), None)
+        if p is None:
+            return None
+        blob = json.dumps(p, sort_keys=True, ensure_ascii=False).encode()
+        return hashlib.sha256(blob).hexdigest()[:12]
+
+    @property
+    def synced_from(self):
+        """Commit of the owner's repo these recipes came from, or None when
+        they are the repo's own recipes.json."""
+        return (self.data.get("_sync") or {}).get("commit")
 
     def tol_of(self, target):
         """Tolerance for a target: the recipe's percentage, floored at two

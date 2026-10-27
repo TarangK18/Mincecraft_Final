@@ -21,6 +21,10 @@ screenshots/_layout_*
 # Excel's lock file, created whenever a workbook is open
 ~$*
 
+# Local copies of each released version (DOKI rule) — kept on the PC, not
+# in the public repo or on the Pi
+_versions/
+
 # Python
 __pycache__/
 *.pyc

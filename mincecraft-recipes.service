@@ -1,0 +1,13 @@
+# systemd USER unit: sync recipes from the owner's workbook on GitHub.
+# install-pi.sh copies this to ~/.config/systemd/user/ with @HERE@ replaced
+# by the folder this repo lives in. Started by mincecraft-recipes.timer.
+[Unit]
+Description=MINCECRAFT recipe sync (workbook on GitHub -> Pi)
+Documentation=file://@HERE@/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=@HERE@
+ExecStart=/usr/bin/python3 -u @HERE@/updater.py --recipes
+Nice=10
+TimeoutStartSec=120
