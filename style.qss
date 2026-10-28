@@ -74,6 +74,7 @@ QPushButton[variant="ghost"]:pressed    { background: #1b232d; }
 #notice[tone="over"] { color: #e05d5d; font-weight: bold; }
 #notice[tone="ok"]   { color: #8fa0b0; }
 #notice[tone="warn"] { color: #e8b339; font-weight: bold; }
+#notice[tone="good"] { color: #3fbf7f; font-weight: bold; }
 #stars       { font-size: {f40}px; }
 #doneHead    { color: #3fbf7f; font-size: {f19}px; font-weight: bold; }
 #dialogTitle { font-size: {f22}px; font-weight: bold; }

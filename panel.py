@@ -9,15 +9,17 @@ and the panel polls ScaleState.snapshot() on a 100 ms timer.
 
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
-from PyQt5.QtCore import Qt, QTimer, QRectF
+from PyQt5.QtCore import QProcess, Qt, QTimer, QRectF
 from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QPushButton, QSizePolicy, QStackedWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+    QScroller, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from scale import (MAIN, PAPAIN_MEATS, SMALL, Config, clock_synced, fmt,
                    fmt_g, read_update_status)
@@ -1443,6 +1445,268 @@ class MeatTypeScreen(Screen):
         pass
 
 
+def when(stamp):
+    """'2026-10-27T16:05:00+0530' -> '27 Oct 16:05'; '' if missing or odd."""
+    try:
+        return datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%S%z").strftime("%d %b %H:%M")
+    except (TypeError, ValueError):
+        return ""
+
+
+def g_text(value):
+    """46.4 -> '46.4 g', 0.25 -> '0.25 g', 300.0 -> '300 g' (recipe view:
+    the owner's own numbers, not rounded to a scale's division)."""
+    return f"{value:,.3f}".rstrip("0").rstrip(".") + " g"
+
+
+def sheet_problems(cfg):
+    """{tab name: (first problem, kept previous?)} for recipe tabs the last
+    sync did not take."""
+    out = {}
+    for item in (cfg.data.get("_sync") or {}).get("skipped_sheets") or []:
+        probs = item.get("problems") or ["has a mistake"]
+        out[item.get("sheet", "?")] = (probs[0], item.get("kept_previous", True))
+    return out
+
+
+class RecipesScreen(Screen):
+    """Supervisor: the recipes on the station, one button each — tap one to
+    see it in full. One short line says where they came from; SYNC NOW pulls
+    the sheet at once instead of waiting for the 5-minute timer. Nothing is
+    edited here: the Google Sheet is the only place recipes change."""
+
+    COLS = 3
+
+    def build(self):
+        self.box.addWidget(label("Supervisor — <b>Recipes</b>", "crumb"))
+        self.status = label("", "notice", wrap=True)
+        self.box.addWidget(self.status)
+        self.grid = QGridLayout()
+        self.grid.setSpacing(int(8 * self.panel.scale))
+        self.box.addLayout(self.grid)
+        self.box.addStretch(1)
+        self.result = label("", "notice", Qt.AlignCenter, wrap=True)
+        self.result.setVisible(False)
+        self.box.addWidget(self.result)
+        self.sync_btn = button("SYNC NOW", "primary", self.panel.sync_recipes_now)
+        self.action_row((button("◀ BACK", "ghost",
+                                lambda: self.panel.show_screen("MENU")), 1),
+                        (self.sync_btn, 0))
+        self.cards = {}
+        self._shown = None
+        self._next_paint = 0.0
+
+    def enter(self):
+        if not self.panel.syncing():
+            self.set_result("ok", "" if self.panel.sync_argv else
+                            "SYNC NOW is not set up on this station.")
+        self._shown = None
+        self.paint()
+
+    def tick(self, snap, live):
+        if time.monotonic() >= self._next_paint:
+            self.paint()
+
+    def set_result(self, tone, text):
+        if self.result.property("tone") != tone:
+            self.result.setProperty("tone", tone)
+            restyle(self.result)
+        self.result.setText(text)
+        self.result.setVisible(bool(text))
+
+    def set_status(self, tone, text):
+        if self.status.property("tone") != tone:
+            self.status.setProperty("tone", tone)
+            restyle(self.status)
+        self.status.setText(text)
+
+    def items(self):
+        """[(name, product id or None, problem or None)] in station order,
+        then tabs with a mistake that are not on the station at all."""
+        cfg = self.panel.cfg
+        probs = sheet_problems(cfg)
+        out = [(p["name"], p["id"], probs.get(p["name"], (None,))[0])
+               for p in cfg.products]
+        names = {p["name"] for p in cfg.products}
+        out += [(n, None, why) for n, (why, _) in probs.items() if n not in names]
+        return out
+
+    def paint(self):
+        self._next_paint = time.monotonic() + 1.0
+        panel = self.panel
+        cfg = panel.cfg
+        sync = cfg.data.get("_sync") or {}
+        rec = (panel._status or {}).get("recipes") or {}
+
+        # One line, not a report: where from and when, or the one problem.
+        if rec.get("ok") is False and rec.get("rejected"):
+            why = str(rec["rejected"].get("why", ""))
+            why = why if len(why) <= 110 else why[:107] + "…"
+            self.set_status("warn", f"⚠ Last sheet not taken: {why}")
+        elif rec.get("online") is False:
+            since = when(sync.get("applied_at"))
+            self.set_status("warn", "⚠ Recipe sheet not reachable at the last "
+                                    "check — showing "
+                                    + (f"recipes from {since}." if since
+                                       else "the built-in recipes."))
+        elif panel.recipe_note and panel.recipe_note[0] == "warn":
+            self.set_status("warn", "⚠ " + panel.recipe_note[1])
+        elif sync.get("source") == "google-sheet":
+            self.set_status("ok", "From the Google Sheet · last change "
+                                  f"{when(sync.get('applied_at'))}")
+        elif sync:
+            self.set_status("ok", "From the workbook on GitHub · last change "
+                                  f"{when(sync.get('applied_at'))}")
+        else:
+            self.set_status("ok", "Built into the station — not synced from "
+                                  "the sheet yet")
+
+        items = self.items()
+        key = repr(items) + repr([(p["id"], p.get("batch"), len(p["ingredients"]))
+                                  for p in cfg.products])
+        if key != self._shown:
+            self._shown = key
+            self._build_cards(items)
+
+        running = panel.syncing()
+        self.sync_btn.setEnabled(bool(panel.sync_argv) and not running)
+        self.sync_btn.setText("SYNCING…" if running else "SYNC NOW")
+
+    def _build_cards(self, items):
+        while self.grid.count():
+            w = self.grid.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        self.cards = {}
+        cfg = self.panel.cfg
+        for i, (name, pid, why) in enumerate(items):
+            if pid is None:
+                sub, variant = "⚠ not on the station", "warn"
+            elif why:
+                sub, variant = "⚠ check the sheet", "warn"
+            elif cfg.is_fixed_batch(pid):
+                sub, variant = f"fixed batch · {fmt(cfg.batch_total_g(pid))}", "primary"
+            else:
+                n = len(cfg.active_ingredients(pid))
+                sub, variant = f"{n} ingredient{'s' if n != 1 else ''}", "primary"
+            btn = button(f"{name}\n{sub}", variant,
+                         lambda _, nm=name: self.panel.show_recipe(nm))
+            btn.setMinimumHeight(int(66 * self.panel.scale))
+            self.cards[name] = btn
+            self.grid.addWidget(btn, i // self.COLS, i % self.COLS)
+
+
+class RecipeScreen(Screen):
+    """One recipe in full, exactly as the station will weigh it: every
+    ingredient in weighing order with its grams per kg of meat (or per batch),
+    and papain last. Read-only."""
+
+    def build(self):
+        self.crumb = label("", "crumb")
+        self.box.addWidget(self.crumb)
+        self.headline = label("", "ingName")
+        self.box.addWidget(self.headline)
+        self.sub = label("", "target", wrap=True)
+        self.box.addWidget(self.sub)
+        self.problem = label("", "notice", wrap=True)
+        self.problem.setProperty("tone", "warn")
+        self.problem.setVisible(False)
+        self.box.addWidget(self.problem)
+        self.table = QTableWidget(0, 3)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        head = self.table.horizontalHeader()
+        head.setSectionResizeMode(QHeaderView.ResizeToContents)
+        head.setSectionResizeMode(1, QHeaderView.Stretch)
+        # A finger drags the list; the scrollbar alone is too thin to hit.
+        QScroller.grabGesture(self.table.viewport(), QScroller.LeftMouseButtonGesture)
+        self.box.addWidget(self.table, 1)
+        self.action_row((button("◀ ALL RECIPES", "ghost",
+                                lambda: self.panel.show_screen("RECIPES")), 1))
+        self.name = None
+        self._shown = None
+
+    def enter(self):
+        self._shown = None
+        self.paint()
+        self.table.scrollToTop()
+
+    def tick(self, snap, live):
+        self.paint()                    # cheap when nothing changed
+
+    def find(self):
+        cfg = self.panel.cfg
+        return next((p for p in cfg.products if p["name"] == self.name), None)
+
+    def paint(self):
+        cfg = self.panel.cfg
+        p = self.find()
+        why = sheet_problems(cfg).get(self.name, (None, True))[0]
+        key = (self.name, repr(p), why, repr(cfg.papain))
+        if key == self._shown:
+            return
+        self._shown = key
+        self.crumb.setText(f"Supervisor — Recipes › <b>{self.name}</b>")
+        self.headline.setText(self.name or "")
+        if why:
+            self.problem.setText(
+                f"⚠ Not updated from the sheet: {why}. "
+                + ("This is the previous recipe — fix the tab and sync again."
+                   if p else "Fix the tab and sync again."))
+        self.problem.setVisible(bool(why))
+        if p is None:
+            self.sub.setText("Not on the station.")
+            self.table.setVisible(False)
+            return
+        self.table.setVisible(True)
+
+        pid = p["id"]
+        fixed = cfg.is_fixed_batch(pid)
+        rows = [(n, q if fixed else q * 10.0) for n, q in p["ingredients"]]
+        weighed = [g for _, g in rows if g > 0]
+        papain = cfg.papain_applies(pid)
+        bits = ["Fixed batch, no meat" if fixed else "Per 1 kg of meat",
+                f"{len(weighed)} ingredient{'s' if len(weighed) != 1 else ''}",
+                f"{fmt(sum(weighed))} per batch" if fixed
+                else f"{g_text(sum(weighed))} per kg"]
+        meat = cfg.meat_of(pid)
+        if meat:
+            bits.append(str(meat))
+        if papain:
+            bits.append("papain last")
+        self.sub.setText(" · ".join(bits))
+
+        self.table.setHorizontalHeaderLabels(
+            ["#", "Ingredient", "Per batch" if fixed else "Per kg meat"])
+        extra = 1 if papain else 0
+        self.table.setRowCount(len(rows) + extra)
+        n = 0
+        for r, (name, g) in enumerate(rows):
+            live = g > 0
+            n += live
+            cells = [str(n) if live else "", name, g_text(g) if live else "not weighed"]
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if c == 2:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if not live:
+                    item.setForeground(QColor(MUTED))
+                self.table.setItem(r, c, item)
+        if papain:
+            rates = cfg.papain.get("g_per_kg_meat") or {}
+            text = " · ".join(f"{k} {g_text(v)}" for k, v in rates.items())
+            cells = ["", f"{cfg.papain_name} — last, by meat (other meat: none)", text]
+            for c, t in enumerate(cells):
+                item = QTableWidgetItem(t)
+                item.setForeground(QColor(AMBER))
+                if c == 2:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(len(rows), c, item)
+
+
 class MenuScreen(Screen):
     def build(self):
         self.box.addWidget(label("<b>Menu</b> (supervisor)", "crumb"))
@@ -1450,7 +1714,8 @@ class MenuScreen(Screen):
         grid.setSpacing(int(10 * self.panel.scale))
         entries = [("Today's water ratio", lambda: self.panel.show_screen("WATER")),
                    ("Scale calibration", None),
-                   ("Recipe editor", None), ("Batch log", self.panel.show_batch_log)]
+                   ("Recipes", lambda: self.panel.show_screen("RECIPES")),
+                   ("Batch log", self.panel.show_batch_log)]
         for i, (text, fn) in enumerate(entries):
             btn = button(text, None, fn)
             btn.setMinimumHeight(int(60 * self.panel.scale))
@@ -1469,7 +1734,8 @@ class Panel(QMainWindow):
                "PRODUCT": ProductScreen, "REVIEW": ReviewScreen, "ADD": AddScreen,
                "MANUAL": ManualAddScreen, "DONE": DoneScreen, "MENU": MenuScreen,
                "WATER": WaterRatioScreen, "MEAT": MeatTypeScreen,
-               "TYPED": TypedBaseScreen}
+               "TYPED": TypedBaseScreen, "RECIPES": RecipesScreen,
+               "RECIPE": RecipeScreen}
 
     def __init__(self, state, cfg, batches, daily, sim=None, scale=1.0,
                  version="", recipes_path=None, status_path=None,
@@ -1484,6 +1750,17 @@ class Panel(QMainWindow):
         self._next_check = 0.0
         self._status = {}
         self.recipe_note = start_note    # station-side news, e.g. "updated"
+        # SYNC NOW on the Recipes screen runs the updater as its own process,
+        # exactly as the timer does — the station itself still makes no
+        # network call. None = not set up (demo, or a fixed recipes file).
+        self.sync_argv = None
+        if recipes_path and status_path:
+            self.sync_argv = [sys.executable, os.path.join(HERE, "updater.py"),
+                              "--recipes",
+                              "--state-dir", os.path.dirname(status_path),
+                              "--data-dir", os.path.dirname(recipes_path)]
+        self.sync_timeout_s = 90
+        self._sync = None
         # How the panel asks whether the clock can be trusted. An attribute so
         # tests can answer for it; the real one shells out at most twice a batch.
         self.clock_check = clock_synced
@@ -1733,7 +2010,8 @@ class Panel(QMainWindow):
 
         self._paint_sim()
         if not self.dialog_open:
-            if self.current == "HOME" and time.monotonic() >= self._next_check:
+            if self.current in ("HOME", "RECIPES", "RECIPE") and \
+                    time.monotonic() >= self._next_check:
                 self._next_check = time.monotonic() + 5.0
                 self.check_recipes()
             self.screens[self.current].tick(snap, live)
@@ -1748,12 +2026,97 @@ class Panel(QMainWindow):
             return None
 
     def idle(self):
-        """No batch in progress: the only time recipes may change."""
-        return self.current == "HOME" and not self.st.product and not self.st.steps
+        """No batch in progress: the only time recipes may change. The Recipes
+        screen counts — it is reached from HOME through the menu, never from
+        inside a batch."""
+        return (self.current in ("HOME", "RECIPES", "RECIPE") and not self.st.product
+                and not self.st.steps)
+
+    # -- SYNC NOW ----------------------------------------------------------
+
+    def show_recipe(self, name):
+        self.screens["RECIPE"].name = name
+        self.show_screen("RECIPE")
+
+    def syncing(self):
+        return self._sync is not None
+
+    def sync_recipes_now(self):
+        """Run `updater.py --recipes` in the background; the screen stays live
+        and the result is shown when it finishes."""
+        if not self.sync_argv or self._sync is not None:
+            return False
+        # The updater rewrites update.json on every run that does anything;
+        # one that finds the timer's copy holding the lock leaves it alone.
+        # (checked_at has 1 s resolution — two syncs in a second look equal.)
+        before = self._mtime(self.status_path)
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        killer = QTimer(self)
+        killer.setSingleShot(True)
+        self._sync = {"proc": proc, "before": before, "killed": False,
+                      "killer": killer}
+
+        def on_timeout():
+            if self._sync is not None and self._sync["proc"] is proc:
+                self._sync["killed"] = True
+                proc.kill()
+
+        killer.timeout.connect(on_timeout)
+        proc.finished.connect(lambda code, _st: self._sync_done(proc, code))
+        proc.errorOccurred.connect(
+            lambda err: err == QProcess.FailedToStart and self._sync_done(proc, None))
+        self.screens["RECIPES"].set_result("ok", "Checking the recipe sheet…")
+        proc.start(self.sync_argv[0], self.sync_argv[1:])
+        killer.start(int(self.sync_timeout_s * 1000))
+        self.screens["RECIPES"].paint()
+        return True
+
+    def _sync_done(self, proc, code):
+        job = self._sync
+        if job is None or job["proc"] is not proc:
+            return
+        self._sync = None
+        job["killer"].stop()
+        out = bytes(proc.readAll()).decode("utf-8", "replace").strip()
+        if out:
+            print(f"sync now: {out.splitlines()[-1]}", flush=True)
+        proc.deleteLater()
+        if self.status_path:
+            self._status = read_update_status(self.status_path)
+        rec = self._status.get("recipes") or {}
+        changed = self.check_recipes()
+        n = len(self.cfg.products)
+        if code is None:
+            tone, text = "over", "Could not run the updater — recipes unchanged."
+        elif job["killed"]:
+            tone, text = "over", (f"No answer after {self.sync_timeout_s:g} s — "
+                                  f"stopped. Recipes unchanged.")
+        elif self._mtime(self.status_path) == job["before"]:
+            tone, text = "ok", ("Another sync was already running — "
+                                  "this screen updates when it finishes.")
+        elif changed:
+            tone, text = "good", f"✓ Recipes updated — {n} recipes on the station."
+        elif rec.get("online") is False:
+            tone, text = "over", "Could not reach the recipe sheet — recipes unchanged."
+        elif rec.get("ok") is False:
+            tone, text = "over", "The sheet was not taken (see the top line) — recipes unchanged."
+        elif self.recipe_note and self.recipe_note[0] == "warn":
+            tone, text = "over", "New recipes could not be loaded (see the top line)."
+        elif (self.cfg.data.get("_sync") or {}).get("skipped_sheets"):
+            tone, text = "over", ("No recipe changed — fix the tabs marked ⚠ in "
+                                  "the sheet and sync again.")
+        else:
+            tone, text = "good", "✓ No change — the station already has the latest recipes."
+        screen = self.screens["RECIPES"]
+        screen.set_result(tone, text)
+        screen.paint()
 
     def check_recipes(self):
         """Pick up a newer synced recipes file, if it is valid and nothing is
-        being weighed. Returns True if the recipes changed."""
+        being weighed. Returns True if the recipes themselves changed; a file
+        whose only news is its sync note (e.g. a tab with a mistake, previous
+        recipe kept) is still taken, but returns False."""
         if self.status_path:
             self._status = read_update_status(self.status_path)
         if not self.recipes_path or not self.idle():
@@ -1769,9 +2132,15 @@ class Panel(QMainWindow):
             return False
         if cfg.data == self.cfg.data:
             return False
+
+        def recipes(c):
+            return {k: v for k, v in c.data.items() if k != "_sync"}
+        changed = recipes(cfg) != recipes(self.cfg)
         self.cfg = cfg
         for s in self.screens.values():
             s.cfg = cfg
+        if not changed:
+            return False
         self.recipe_note = ("ok", f"Recipes updated {time.strftime('%d %b %H:%M')}.")
         print(f"recipes reloaded from {self.recipes_path} "
               f"(commit {cfg.synced_from or 'repo'})", flush=True)

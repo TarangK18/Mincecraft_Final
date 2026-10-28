@@ -17,7 +17,7 @@ Recipes come from the owner's **Google Sheet** and code updates from GitHub,
 both through **`updater.py`**, also a separate process — see "Recipes from the
 Google Sheet" and "Updates from GitHub" below.
 
-**Versions:** station `v1.2`, uploader `v1.0`, updater `v1.1` (headers at the
+**Versions:** station `v1.3`, uploader `v1.0`, updater `v1.2` (headers at the
 top of `station.py`, `uploader.py`, `updater.py`; the station's version is in
 the status bar and every program prints its version at start).
 
@@ -114,6 +114,7 @@ for free. For a console-only boot with no desktop, run it under
 | `sheet_recipes.py` | reads and checks the downloaded sheet (one tab per recipe); no network of its own |
 | `recipes.env.example` | template for `~/.config/mincecraft/recipes.env`, which holds the sheet link. The real one is outside the repo |
 | `tests/test_sheet_recipes.py` | 26 tests: the tab layout, every kind of mistake, copied tabs, a fake Google server (not shared, offline, broken sheet), boot with GitHub down |
+| `tests/test_recipes_screen.py` | 15 tests: Menu → Recipes (list + full recipe) and SYNC NOW end to end with the real updater (updated, no change, a mistake named and cleared, not shared, offline, hung, cannot start, lock held, one at a time, never mid-batch, demo) |
 | `mincecraft-recipes.service` / `.timer` | systemd **user** units that run the recipe sync every 5 minutes |
 | `tests/test_updater.py` | 18 tests: a throw-away origin repo; recipe sync, rejection, offline, stable/rollback, the real launcher, no mid-batch reload |
 | `tests/bench_upload.py` / `bench_batches.jsonl` | live test against the real server (ids `bec40001-0..2`, sent 2026-10-21 — delete before go-live) |
@@ -398,6 +399,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_typed_base.py  # 43 — typed meat 
 QT_QPA_PLATFORM=offscreen python3 tests/test_uploader.py    # 40 — the uploader, offline
 QT_QPA_PLATFORM=offscreen python3 tests/test_updater.py     # 18 — recipe sync, stable + rollback, boot
 QT_QPA_PLATFORM=offscreen python3 tests/test_sheet_recipes.py  # 26 — Google Sheet recipes
+QT_QPA_PLATFORM=offscreen python3 tests/test_recipes_screen.py  # 15 — Menu → Recipes, full recipe, SYNC NOW
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base
@@ -499,13 +501,27 @@ has no recipe tabs, or every recipe is set to Active: no — then the station
 keeps what it has and HOME says why. Scales, tolerances, the PIN and papain
 rates still come from `recipes.json` in the repo.
 
+**At the station: Menu (PIN) → Recipes** shows a button for each recipe
+(amber with ⚠ if its tab in the sheet has a mistake). Tap one to see the whole
+recipe: every ingredient in weighing order with its grams per kg of meat (or
+per batch for a fixed batch), papain last, and — if the tab has a mistake —
+what is wrong. One line at the top says where the recipes came from and when,
+or that the sheet was not reachable / not taken. **SYNC NOW**
+pulls the sheet straight away instead of waiting for the 5-minute timer: it
+runs `updater.py --recipes` as a separate process (stopped after 90 s, one at
+a time, the screen stays usable) and says what happened — *Recipes updated*,
+*No change*, *No recipe changed — fix the tabs listed above*, *Could not reach
+the recipe sheet*, or *The sheet was not taken*. Recipes are only swapped with
+no batch open. There is no recipe editing on the station: the sheet is the
+one place recipes change.
+
 **Access.** The sheet is shared as **Anyone with the link: Viewer**; the Pi
 downloads it as one `.xlsx` (`/export?format=xlsx`, no Google login, no API
 key). The link is the only secret, so it lives **only on the Pi**:
 
 ```bash
 nano ~/.config/mincecraft/recipes.env      # RECIPES_SHEET_URL=https://docs.google.com/spreadsheets/d/…
-python3 updater.py --recipes               # sync now; HOME / --status shows the result
+python3 updater.py --recipes               # sync now (same as SYNC NOW); HOME / --status shows the result
 ```
 
 `recipes.env` is created by `install-pi.sh` from `recipes.env.example` and is

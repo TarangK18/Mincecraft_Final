@@ -2,7 +2,7 @@
 """
 DOKI weighing station (MINCECRAFT) — entry point.
 
-THIS VERSION: v1.2 (2026-10-27)
+THIS VERSION: v1.3 (2026-10-28)
 
 What it does now, as a whole:
   - Reads the main scale (RS232, 9600 8N1, /dev/ttyUSB0) on its own thread;
@@ -17,7 +17,14 @@ What it does now, as a whole:
     file is valid, otherwise the repo's recipes.json. While on the HOME
     screen with no batch open it checks every 5 s for a newer synced file and
     switches to it — never mid-batch. HOME shows what the updater last did
-    (recipes updated, a rejected workbook, a rolled-back software update).
+    (recipes updated, a rejected sheet, a rolled-back software update).
+  - Supervisor menu -> Recipes (behind the PIN): one button per recipe
+    (amber with a warning if its sheet tab has a mistake); tap one to see it
+    in full — every ingredient in weighing order with grams per kg of meat
+    (or per batch) and papain last. One line says where the recipes came
+    from and when. SYNC NOW runs `updater.py --recipes` as a separate
+    process (max 90 s, one at a time, screen stays usable) and reports the
+    result. Recipes are never edited on the station.
   - Writes one line per finished batch to batches.jsonl (append-only),
     including "clock_synced" (NTP-synced at both start and finish),
     "recipe_version" (id of the exact recipe used), "recipes_commit" and
@@ -27,9 +34,11 @@ What it does now, as a whole:
     by install-pi.sh); mincecraft.sh runs updater.py first.
   - On failure: a dead or unplugged scale shows NO SCALE / STALE and disables
     weighing; the reader reconnects every 2 s. Nothing is lost from the log.
-  - What it does NOT do: no network at all. Sending batches to the server is
-    uploader.py, and fetching recipes / code is updater.py — separate
-    processes. The station works the same with or without them.
+  - What it does NOT do: no network of its own. Sending batches to the
+    server is uploader.py, and fetching recipes / code is updater.py —
+    separate processes (SYNC NOW only starts the updater). The station works
+    the same with or without them. No recipe editing and no scale
+    calibration on the station (Scale calibration stays greyed out).
 
   python3 station.py                    # real scale on /dev/ttyUSB0, fullscreen
   python3 station.py --sim              # simulated scale, on-screen +/- buttons
@@ -37,6 +46,15 @@ What it does now, as a whole:
   python3 station.py --port /dev/ttyUSB1
 
 CHANGES (newest first)
+  v1.3  2026-10-28  The dead "Recipe editor" menu button is now "Recipes":
+                    a button per recipe that opens the full recipe, a
+                    one-line source note, and SYNC NOW (needs updater.py
+                    v1.2). A first text-heavy layout was replaced the same
+                    day at Tarang's request.
+                    A synced file whose only news is a tab with a mistake is
+                    taken without saying "Recipes updated".
+                    Why: the owner edits the sheet and should not wait up to
+                    5 min, and a mistake in it must be visible at the station.
   v1.2  2026-10-27  Recipes come from the owner's Google Sheet (via
                     updater.py v1.1): HOME wording names the sheet, says
                     when it is unreachable, and lists products not taken
@@ -65,7 +83,7 @@ from scale import (LOCAL_RECIPES, UPDATE_STATUS, BatchLog, Config, DailyRatio,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-FW_VERSION = "v1.2"
+FW_VERSION = "v1.3"
 
 
 def main(argv=None):

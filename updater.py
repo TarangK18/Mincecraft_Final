@@ -2,22 +2,23 @@
 """
 MINCECRAFT updater — recipes from the owner's Google Sheet, code from `stable`.
 
-THIS VERSION: v1.1 (2026-10-27)
+THIS VERSION: v1.2 (2026-10-28)
 
 What it does now, as a whole:
   - RECIPES FROM THE GOOGLE SHEET (when ~/.config/mincecraft/recipes.env
     holds RECIPES_SHEET_URL — the normal case): every 5 min (systemd user
     timer) and at every station start, downloads the whole sheet as .xlsx in
-    one request through its "anyone with the link" view link, reads the
-    Products and Ingredients tabs (sheet_recipes.py), merges them with the
+    one request through its "anyone with the link" view link, reads one tab
+    per recipe (sheet_recipes.py), merges them with the
     settings in the repo's recipes.json (scales, tolerances, PIN, papain
     rates), checks the result with the station's own Config +
     validate_products(), and writes it atomically to
     ~/.local/share/mincecraft/recipes.json. A product with a mistake keeps
-    its previous recipe and is named in the status; a sheet that is broken
-    as a whole (missing tab or column, an ingredient for a product that is
-    not on the Products tab, not shared) is rejected and the last good
-    recipes stay. The station shows all of this on its HOME screen.
+    its previous recipe and is named in the status and in the synced file —
+    also when that leaves the recipes themselves unchanged; a sheet that is
+    unusable as a whole (not shared, no recipe tabs, every recipe inactive)
+    is rejected and the last good recipes stay. The station shows all of
+    this on HOME and on its Recipes screen, whose SYNC NOW runs --recipes.
   - RECIPES FROM THE WORKBOOK ON GITHUB (only when no sheet link is set —
     before handover or for testing): fetches the repo's `origin`, reads DOKI-Recipes.xlsx and
     recipes.json from origin/main WITHOUT checking anything out, converts the
@@ -58,8 +59,14 @@ Exit codes: 0 ok / nothing to do, 10 = code changed (restart the station),
 1 = nothing to roll back, 2 = bad arguments.
 
 CHANGES (newest first)
-  v1.1  2026-10-27  Recipes come from the owner's Google Sheet (two tabs:
-                    Products, Ingredients) when recipes.env has its link;
+  v1.2  2026-10-28  A tab with a mistake is reported even when keeping its
+                    previous recipe leaves the recipes unchanged (the
+                    problems are now part of the sync id). Before, the
+                    station said "no change" and never named the tab — found
+                    while testing SYNC NOW. Header text updated for the
+                    one-tab-per-recipe layout.
+  v1.1  2026-10-27  Recipes come from the owner's Google Sheet (one tab per
+                    recipe) when recipes.env has its link;
                     the GitHub workbook is only used when no link is set.
                     Why: the owner edits recipes in Google Sheets, from any
                     device, without uploading files to GitHub.
@@ -81,7 +88,7 @@ import time
 import urllib.error
 import urllib.request
 
-FW_VERSION = "v1.1"
+FW_VERSION = "v1.2"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -409,7 +416,11 @@ def sync_from_sheet(repo_path, status, data_dir, url):
         previous = base
 
     cfg, kept, dropped = sr.merge(base, previous, parsed)
-    source = "sheet-" + sr.digest(cfg)
+    # The problems are part of the id: a mistake that leaves the recipes
+    # unchanged (its product keeps the previous version) must still reach
+    # the station, and so must fixing it.
+    source = "sheet-" + sr.digest(dict(cfg, _problems=parsed["problems"],
+                                       _inactive=parsed["inactive"]))
     if source == rs.get("applied_source"):
         rs.pop("last_error", None)
         status.save()

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Recipes from the owner's Google Sheet.
 
-The sheet is built in the test as an .xlsx with the same two tabs as the
-real one (Products, Ingredients) and served from 127.0.0.1, standing in for
-Google's export link. Today's recipes must come back out of it exactly; a
+The sheet is built in the test as an .xlsx laid out like the real one (one
+tab per recipe, plus _Template and How to use) and served from 127.0.0.1,
+standing in for Google's export link. Today's recipes must come back out of it exactly; a
 mistake must cost only the product it is in; a broken or unshared sheet must
 change nothing.
 
