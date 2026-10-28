@@ -2,7 +2,7 @@
 """
 DOKI weighing station (MINCECRAFT) — entry point.
 
-THIS VERSION: v1.1 (2026-10-27)
+THIS VERSION: v1.2 (2026-10-27)
 
 What it does now, as a whole:
   - Reads the main scale (RS232, 9600 8N1, /dev/ttyUSB0) on its own thread;
@@ -12,7 +12,7 @@ What it does now, as a whole:
     empty ingredient container, review every target, weigh each ingredient
     with auto-advance in tolerance, papain last by meat type for jerky.
     Piri Piri Masala is a fixed batch with no meat.
-  - Recipes: starts with the recipes synced from the owner's workbook
+  - Recipes: starts with the recipes synced from the owner's Google Sheet
     (~/.local/share/mincecraft/recipes.json, written by updater.py) if that
     file is valid, otherwise the repo's recipes.json. While on the HOME
     screen with no batch open it checks every 5 s for a newer synced file and
@@ -20,7 +20,8 @@ What it does now, as a whole:
     (recipes updated, a rejected workbook, a rolled-back software update).
   - Writes one line per finished batch to batches.jsonl (append-only),
     including "clock_synced" (NTP-synced at both start and finish),
-    "recipe_version" (id of the exact recipe used) and "recipes_commit", and
+    "recipe_version" (id of the exact recipe used), "recipes_commit" and
+    "recipes_source" (google-sheet / workbook ref / repo), and
     rebuilds consumption.xlsx from it.
   - Starts by itself after a reboot (desktop auto-login + autostart, set up
     by install-pi.sh); mincecraft.sh runs updater.py first.
@@ -36,6 +37,10 @@ What it does now, as a whole:
   python3 station.py --port /dev/ttyUSB1
 
 CHANGES (newest first)
+  v1.2  2026-10-27  Recipes come from the owner's Google Sheet (via
+                    updater.py v1.1): HOME wording names the sheet, says
+                    when it is unreachable, and lists products not taken
+                    because of a mistake; batch lines gain recipes_source.
   v1.1  2026-10-27  Recipes follow the owner's workbook on GitHub: uses the
                     synced recipes file when valid, reloads it between
                     batches, shows update news on HOME, records
@@ -60,7 +65,7 @@ from scale import (LOCAL_RECIPES, UPDATE_STATUS, BatchLog, Config, DailyRatio,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-FW_VERSION = "v1.1"
+FW_VERSION = "v1.2"
 
 
 def main(argv=None):

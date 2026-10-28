@@ -1789,16 +1789,24 @@ class Panel(QMainWindow):
             why = str(rec["rejected"].get("why", ""))
             why = why if len(why) <= 110 else why[:107] + "…"
             return "warn", f"Recipe update rejected: {why} Using the last good recipes."
+        sync = self.cfg.data.get("_sync") or {}
+        from_sheet = sync.get("source") == "google-sheet" or \
+            rec.get("source") == "google-sheet"
+        where = "the recipe sheet" if from_sheet else "the workbook"
         skipped = rec.get("skipped_sheets") or []
         if skipped and self.cfg.synced_from == rec.get("commit"):
             names = ", ".join(x.get("sheet", "?") for x in skipped[:3])
-            return "warn", (f"Not used from the workbook (has a problem): {names}. "
+            more = f" and {len(skipped) - 3} more" if len(skipped) > 3 else ""
+            return "warn", (f"Not taken from {where} (has a mistake): {names}{more}. "
                             f"Previous recipe kept.")
         if self.recipe_note:
             return self.recipe_note
+        when = str(sync.get("applied_at", ""))[:16].replace("T", " ")
+        if from_sheet and rec.get("online") is False and self.cfg.synced_from:
+            return "ok", f"Recipe sheet not reachable — using recipes from {when}."
         if self.cfg.synced_from:
-            when = str((self.cfg.data.get("_sync") or {}).get("applied_at", ""))[:16]
-            return "ok", f"Recipes from the workbook on GitHub ({when.replace('T', ' ')})."
+            src = "the Google Sheet" if from_sheet else "the workbook on GitHub"
+            return "ok", f"Recipes from {src} ({when})."
         return "ok", ""
 
     def _dialog(self, dlg):
@@ -2166,6 +2174,7 @@ class Panel(QMainWindow):
             # quantities = same id. And where the recipes came from.
             "recipe_version": self.cfg.recipe_version(st.product),
             "recipes_commit": self.cfg.synced_from,
+            "recipes_source": (self.cfg.data.get("_sync") or {}).get("source") or "repo",
             "water_ratio": st.water_ratio,
             "production_day": self.daily.production_day(),
             "steps": [{"name": s.name,

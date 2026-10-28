@@ -13,10 +13,11 @@ Finished batches reach the DOKI server through **`uploader.py`, a separate
 process** that only reads `batches.jsonl` — see "Sending batches to the
 server" below. The station works exactly the same with it stopped.
 
-Recipes and code updates come from GitHub through **`updater.py`**, also a
-separate process — see "Updates from GitHub" below.
+Recipes come from the owner's **Google Sheet** and code updates from GitHub,
+both through **`updater.py`**, also a separate process — see "Recipes from the
+Google Sheet" and "Updates from GitHub" below.
 
-**Versions:** station `v1.1`, uploader `v1.0`, updater `v1.0` (headers at the
+**Versions:** station `v1.2`, uploader `v1.0`, updater `v1.1` (headers at the
 top of `station.py`, `uploader.py`, `updater.py`; the station's version is in
 the status bar and every program prints its version at start).
 
@@ -39,7 +40,9 @@ port, writes a **MINCECRAFT Station** icon on the desktop plus
   an autostart entry — both are needed;
 - turns **screen blanking off**, so a tap to wake the screen can't press a
   button;
-- starts the **recipe sync** timer (every 5 min) — see "Updates from GitHub";
+- starts the **recipe sync** timer (every 5 min) and creates
+  `~/.config/mincecraft/recipes.env` for the sheet link — see "Recipes from
+  the Google Sheet";
 - sets `git config core.fileMode false` and no longer marks anything
   executable, so `git pull` never refuses over a chmod again.
 
@@ -107,7 +110,10 @@ for free. For a console-only boot with no desktop, run it under
 | `api.env.example` | template for the key file. The real one is outside the repo; never commit a key |
 | `tests/test_uploader.py` | 40 tests: mapping of real station lines, UTC, identity, resend = duplicates, every server answer |
 | `tests/mock_ingest.py` | local stand-in for `/ingest` used by the tests |
-| `updater.py` | separate process: recipes from the owner's workbook (every 5 min), code from branch `stable` at start, with rollback |
+| `updater.py` | separate process: recipes from the owner's Google Sheet (every 5 min; the workbook on GitHub if no sheet link is set), code from branch `stable` at start, with rollback |
+| `sheet_recipes.py` | reads and checks the downloaded sheet (one tab per recipe); no network of its own |
+| `recipes.env.example` | template for `~/.config/mincecraft/recipes.env`, which holds the sheet link. The real one is outside the repo |
+| `tests/test_sheet_recipes.py` | 26 tests: the tab layout, every kind of mistake, copied tabs, a fake Google server (not shared, offline, broken sheet), boot with GitHub down |
 | `mincecraft-recipes.service` / `.timer` | systemd **user** units that run the recipe sync every 5 minutes |
 | `tests/test_updater.py` | 18 tests: a throw-away origin repo; recipe sync, rejection, offline, stable/rollback, the real launcher, no mid-batch reload |
 | `tests/bench_upload.py` / `bench_batches.jsonl` | live test against the real server (ids `bec40001-0..2`, sent 2026-10-21 — delete before go-live) |
@@ -391,6 +397,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_papain.py   # 20 — papain by meat
 QT_QPA_PLATFORM=offscreen python3 tests/test_typed_base.py  # 43 — typed meat weight
 QT_QPA_PLATFORM=offscreen python3 tests/test_uploader.py    # 40 — the uploader, offline
 QT_QPA_PLATFORM=offscreen python3 tests/test_updater.py     # 18 — recipe sync, stable + rollback, boot
+QT_QPA_PLATFORM=offscreen python3 tests/test_sheet_recipes.py  # 26 — Google Sheet recipes
 ```
 
 The panel test drives the real app in simulation. It sweeps the whole flow: a complete batch from base
@@ -461,6 +468,51 @@ rebuilt from scratch after every batch:
 Nothing ever writes to the workbook directly, so it cannot drift from the log,
 and deleting it costs nothing: `python3 consumption.py` brings it back correct.
 
+## Recipes from the Google Sheet
+
+The recipes live in the owner's Google Sheet (*automation
+Data_WeighingStationRecipie*). It **replaces** `DOKI-Recipes.xlsx` as the
+recipe source; the workbook is only used if no sheet link is set on the Pi.
+
+**Layout — one tab per recipe.** The tab name is the product name on the
+station; the tab order is the button order.
+
+| | A | B |
+|---|---|---|
+| 1 | ID | `teriyaki_jerky` — leave as is; empty on a new recipe |
+| 2 | Type | `per kg meat` or `fixed batch` (dropdown) |
+| 3 | Meat | optional note |
+| 4 | Papain | `yes` / `no` (per kg meat only) |
+| 5 | Active | `no` hides it from the station |
+| 7 | Ingredient | Grams — header row |
+| 8+ | one row per ingredient, in weighing order | grams per 1 kg of meat (fixed batch: per batch); 0 = listed, not weighed |
+
+Tabs named **How to use** or starting with **`_`** (`_Template`) are ignored.
+New recipe: duplicate `_Template` and rename it — or duplicate a recipe and
+empty its ID cell (a copied ID is a mistake in the copy only).
+
+**Mistakes.** A tab with a mistake (a word in Grams, a missing header, a
+duplicated ID, Papain on a fixed batch …) is not taken: that product keeps its
+previous recipe and HOME names it. The other recipes still update. The whole
+sheet is rejected only if the download is not a spreadsheet (not shared), it
+has no recipe tabs, or every recipe is set to Active: no — then the station
+keeps what it has and HOME says why. Scales, tolerances, the PIN and papain
+rates still come from `recipes.json` in the repo.
+
+**Access.** The sheet is shared as **Anyone with the link: Viewer**; the Pi
+downloads it as one `.xlsx` (`/export?format=xlsx`, no Google login, no API
+key). The link is the only secret, so it lives **only on the Pi**:
+
+```bash
+nano ~/.config/mincecraft/recipes.env      # RECIPES_SHEET_URL=https://docs.google.com/spreadsheets/d/…
+python3 updater.py --recipes               # sync now; HOME / --status shows the result
+```
+
+`recipes.env` is created by `install-pi.sh` from `recipes.env.example` and is
+covered by `*.env` in `.gitignore` — never put the link in the repo, it is
+public. Each batch line records `recipes_source` (`google-sheet`) and
+`recipe_version`, so every batch can be traced to the recipe it was made to.
+
 ## Updates from GitHub
 
 The Pi follows **the owner's repo** (its `origin`). Two different things come
@@ -468,15 +520,15 @@ from it, on purpose differently:
 
 | | Recipes | Code |
 |---|---|---|
-| comes from | `DOKI-Recipes.xlsx` + `recipes.json` on branch **`main`** | branch **`stable`** only |
+| comes from | the **Google Sheet** (settings from `recipes.json` on **`main`**) | branch **`stable`** only |
 | when | every 5 min (timer) and at every station start | at station start only |
 | applied | between batches, on the HOME screen — never mid-batch | before the station opens |
 | if it's broken | rejected; the last good recipes stay; HOME says why | rolled back automatically if the station fails in its first 2 minutes |
 
-**The owner changing a recipe:** open `DOKI-Recipes.xlsx` in Excel, change the
-weights, save, and upload it to the repo on GitHub with the same name
-(*Add file → Upload files*, commit to `main`). Within about 5 minutes the Pi
-converts and checks it; the next time the station is on HOME it switches over
+**The owner changing a recipe:** edit the recipe's tab in the Google Sheet
+(see above). Without a sheet link the old way still works: change
+`DOKI-Recipes.xlsx` and upload it to `main`. Within about 5 minutes the Pi
+downloads and checks it; the next time the station is on HOME it switches over
 and says "Recipes updated". A sheet with a mistake (an empty or non-number
 weight, a row neither scale can weigh) is skipped — that product keeps its
 previous recipe and HOME names the sheet. A change that would make the
@@ -505,7 +557,7 @@ files edited by hand on the Pi (code updates pause, HOME says so).
 **Handing over to the owner's repo:**
 
 ```bash
-cd ~/Mincecraft_Final
+cd ~/Desktop/Mincecraft_Final
 git remote set-url origin https://github.com/<owner>/<repo>.git
 git fetch origin
 ```
@@ -537,14 +589,17 @@ after the server has answered.
 ### Install (on the Pi, once)
 
 ```bash
-cd ~/Mincecraft_Final
+cd ~/Desktop/Mincecraft_Final       # wherever the clone is (on the station Pi: ~/Desktop)
 git config core.fileMode false      # before pulling — see "file mode" below
 git pull
 bash install-uploader.sh            # creates ~/.config/mincecraft/api.env
 nano ~/.config/mincecraft/api.env   # replace PUT-THE-WRITE-KEY-HERE with the WRITE key
 systemctl --user restart mincecraft-uploader
-journalctl --user -u mincecraft-uploader -f
+tail -f ~/.local/state/mincecraft/uploader.log    # expect "HTTP 200 ... stored=N"
 ```
+
+Run `install-uploader.sh` first: it creates `~/.config/mincecraft/`. Saving
+api.env before that fails with "No such file or directory".
 
 The key lives only in `~/.config/mincecraft/api.env` (mode 600). **This repo
 is public: never put a key in it, in `recipes.json`, or in any tracked
@@ -596,9 +651,18 @@ first line changes, or it gets shorter than the offset).
 | 400 | a bug in the uploader: logged, keeps its place, retries every 5 min |
 | 401 / 403 / 404 | wrong key / URL: logged, keeps its place, re-reads api.env every 5 min |
 
-Logs: `journalctl --user -u mincecraft-uploader` and
-`~/.local/state/mincecraft/uploader.log` (keeps the full original line of
-every batch sent).
+Logs: `~/.local/state/mincecraft/uploader.log` (keeps the full original line
+of every batch sent). On Raspberry Pi OS `journalctl --user` usually shows
+"No journal files were found" — the system journal is kept in memory only, so
+per-user journals don't exist; use the log file. `systemctl --user status
+mincecraft-uploader` still shows whether it is running.
+
+**Test batches in the real database — delete before go-live:**
+`bec40001-0`, `bec40001-1`, `bec40001-2` (bench test, 2026-10-21) and
+`4e1ef9ad-0`, `4e1ef9ad-1` (test batches made on the station Pi, sent
+2026-10-27). Those two lines are still in the Pi's `batches.jsonl`; to start
+production with a clean file, move it aside before the first real batch —
+the uploader then starts a new boot_id from line 0 by itself.
 
 ### File mode
 

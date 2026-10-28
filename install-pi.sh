@@ -130,9 +130,20 @@ fi
 
 # ------------------------------------------------------------- recipe sync
 # Every 5 minutes, and at every station start, updater.py reads the owner's
-# DOKI-Recipes.xlsx from GitHub (branch main), checks it, and hands valid
-# recipes to the station. Code only changes from the `stable` branch, at
-# station start (see README, "Updates from GitHub").
+# Google Sheet (link in ~/.config/mincecraft/recipes.env), checks it, and
+# hands valid recipes to the station. With no link set it falls back to
+# DOKI-Recipes.xlsx on GitHub (main). Code only changes from the `stable`
+# branch, at station start (see README, "Updates from GitHub").
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/mincecraft"
+mkdir -p "$CONF"
+if [ ! -f "$CONF/recipes.env" ]; then
+    cp "$HERE/recipes.env.example" "$CONF/recipes.env"
+    echo "  recipe sheet   created $CONF/recipes.env — paste the sheet link into it"
+elif grep -q '^RECIPES_SHEET_URL=PASTE-THE' "$CONF/recipes.env"; then
+    echo "  recipe sheet   link not set yet — edit $CONF/recipes.env"
+else
+    echo "  recipe sheet   link set in $CONF/recipes.env"
+fi
 UNITDIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$UNITDIR"
 for u in mincecraft-recipes.service mincecraft-recipes.timer; do
@@ -140,7 +151,7 @@ for u in mincecraft-recipes.service mincecraft-recipes.timer; do
 done
 if systemctl --user daemon-reload 2>/dev/null && \
    systemctl --user enable --now mincecraft-recipes.timer >/dev/null 2>&1; then
-    echo "  recipe sync    on — every 5 min from $(git -C "$HERE" remote get-url origin 2>/dev/null || echo '?')"
+    echo "  recipe sync    on — every 5 min"
 else
     echo "  recipe sync    timer not started (no user systemd session?) — re-run after logging in"
 fi

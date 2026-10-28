@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """
-MINCECRAFT updater — recipes from the workbook, code from the `stable` branch.
+MINCECRAFT updater — recipes from the owner's Google Sheet, code from `stable`.
 
-THIS VERSION: v1.0 (2026-10-27)
+THIS VERSION: v1.1 (2026-10-27)
 
 What it does now, as a whole:
-  - RECIPES (every 5 min from a systemd user timer, and at every station
-    start): fetches the repo's `origin`, reads DOKI-Recipes.xlsx and
+  - RECIPES FROM THE GOOGLE SHEET (when ~/.config/mincecraft/recipes.env
+    holds RECIPES_SHEET_URL — the normal case): every 5 min (systemd user
+    timer) and at every station start, downloads the whole sheet as .xlsx in
+    one request through its "anyone with the link" view link, reads the
+    Products and Ingredients tabs (sheet_recipes.py), merges them with the
+    settings in the repo's recipes.json (scales, tolerances, PIN, papain
+    rates), checks the result with the station's own Config +
+    validate_products(), and writes it atomically to
+    ~/.local/share/mincecraft/recipes.json. A product with a mistake keeps
+    its previous recipe and is named in the status; a sheet that is broken
+    as a whole (missing tab or column, an ingredient for a product that is
+    not on the Products tab, not shared) is rejected and the last good
+    recipes stay. The station shows all of this on its HOME screen.
+  - RECIPES FROM THE WORKBOOK ON GITHUB (only when no sheet link is set —
+    before handover or for testing): fetches the repo's `origin`, reads DOKI-Recipes.xlsx and
     recipes.json from origin/main WITHOUT checking anything out, converts the
     workbook with xlsx_to_recipes.convert(), and checks the result with the
     station's own Config + validate_products(). Valid -> written atomically
@@ -23,7 +36,8 @@ What it does now, as a whole:
     marks the new one "bad" so it is never tried again; only a newer stable
     commit is.
   - It restarts the uploader service if an update changed uploader.py.
-  - On failure — no network, GitHub down, git error, a bad workbook — it
+  - On failure — no network, Google or GitHub down, git error, a bad
+    sheet or workbook — it
     logs, records the reason in the status file and leaves everything as it
     was. It never stops the station from starting, never waits more than
     ~30 s for the network, and never runs while another copy runs (lock).
@@ -31,7 +45,8 @@ What it does now, as a whole:
     or daily ratio, never applies anything mid-batch (the station decides
     when to pick up recipes), never updates code from `main` (only
     `stable`), never installs packages, never discards local edits (a clone
-    with modified tracked files is left alone and the status says so).
+    with modified tracked files is left alone and the status says so), never
+    writes to the Google Sheet, never stores the sheet link in the repo.
 
   python3 updater.py --recipes      sync recipes now (what the timer runs)
   python3 updater.py --boot         code update (if any), then recipes
@@ -43,6 +58,11 @@ Exit codes: 0 ok / nothing to do, 10 = code changed (restart the station),
 1 = nothing to roll back, 2 = bad arguments.
 
 CHANGES (newest first)
+  v1.1  2026-10-27  Recipes come from the owner's Google Sheet (two tabs:
+                    Products, Ingredients) when recipes.env has its link;
+                    the GitHub workbook is only used when no link is set.
+                    Why: the owner edits recipes in Google Sheets, from any
+                    device, without uploading files to GitHub.
   v1.0  2026-10-27  First version: workbook-driven recipe sync with
                     validation and last-good fallback; code from `stable` at
                     start with rollback.
@@ -58,8 +78,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 
-FW_VERSION = "v1.0"
+FW_VERSION = "v1.1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -67,6 +89,10 @@ STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or
                          os.path.join(HOME, ".local", "state"), "mincecraft")
 DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or
                         os.path.join(HOME, ".local", "share"), "mincecraft")
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or
+                          os.path.join(HOME, ".config"), "mincecraft")
+SHEET_PLACEHOLDER = "PASTE-THE-GOOGLE-SHEET-LINK-HERE"
+SHEET_TIMEOUT_S = 30
 
 WORKBOOK = "DOKI-Recipes.xlsx"
 RECIPES = "recipes.json"
@@ -298,6 +324,127 @@ def _reject(rs, status, source, commit, why):
     return False
 
 
+# ------------------------------------------------------------ google sheet
+
+def read_env(path):
+    out = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return out
+
+
+def sheet_url(config_dir):
+    """The owner's sheet link from recipes.env, or None if not set."""
+    url = os.environ.get("RECIPES_SHEET_URL") or \
+        read_env(os.path.join(config_dir, "recipes.env")).get("RECIPES_SHEET_URL", "")
+    url = url.strip()
+    return url if url and url != SHEET_PLACEHOLDER else None
+
+
+class Offline(Exception):
+    pass
+
+
+def download(url, timeout=SHEET_TIMEOUT_S):
+    """The sheet as .xlsx bytes. Offline -> Offline; anything that is not a
+    spreadsheet comes back as bytes and sheet_recipes says why."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": f"mincecraft-updater/{FW_VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            return b""                       # not shared / wrong link
+        raise Offline(f"HTTP {e.code}") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise Offline(str(getattr(e, "reason", e))) from None
+
+
+def sync_from_sheet(repo_path, status, data_dir, url):
+    """Bring the local recipes up to the owner's sheet. Returns True if a new
+    file was written."""
+    sys.path.insert(0, HERE)
+    import sheet_recipes as sr
+    rs = status.recipes
+    rs["checked_at"] = now_iso()
+    rs["source"] = "google-sheet"
+    try:
+        data = download(sr.export_url(url))
+        rs["online"] = True
+    except Offline as e:
+        rs["online"] = False
+        rs["last_error"] = f"could not reach the Google Sheet ({e}) — recipes unchanged"
+        log.warning(rs["last_error"])
+        status.save()
+        return False
+
+    try:
+        parsed = sr.read_sheet(data)
+    except sr.SheetError as e:
+        msg = str(e)
+        if rs.get("rejected_source") == f"err:{msg}":
+            status.save()                       # already reported
+            return False
+        return _reject(rs, status, f"err:{msg}", "sheet", msg[:1].upper() + msg[1:] + ".")
+
+    try:
+        with open(os.path.join(repo_path, RECIPES), "r", encoding="utf-8") as fh:
+            base = json.load(fh)
+    except (OSError, ValueError) as e:
+        return _reject(rs, status, "err:base", "sheet",
+                       f"the station's own {RECIPES} is unreadable ({e})")
+    local = os.path.join(data_dir, RECIPES)
+    try:
+        with open(local, "r", encoding="utf-8") as fh:
+            previous = json.load(fh)
+    except (OSError, ValueError):
+        previous = base
+
+    cfg, kept, dropped = sr.merge(base, previous, parsed)
+    source = "sheet-" + sr.digest(cfg)
+    if source == rs.get("applied_source"):
+        rs.pop("last_error", None)
+        status.save()
+        return False                            # nothing new
+    if source == rs.get("rejected_source"):
+        status.save()
+        return False
+    problems = validate(cfg)
+    if problems:
+        return _reject(rs, status, source, "sheet", "; ".join(problems[:3]))
+
+    skipped = [{"sheet": name, "problems": parsed["problems"][name],
+                "kept_previous": name in kept} for name in parsed["problems"]]
+    cfg["_sync"] = {
+        "source": "google-sheet", "commit": source,
+        "sheet_id": sr.sheet_id(url), "applied_at": now_iso(),
+        "updater_version": FW_VERSION, "skipped_sheets": skipped,
+        "inactive": parsed["inactive"],
+    }
+    write_json_atomic(local, cfg)
+    rs.update({"ok": True, "applied_source": source, "commit": source,
+               "applied_at": cfg["_sync"]["applied_at"],
+               "skipped_sheets": skipped, "dropped": dropped})
+    for k in ("last_error", "rejected_source", "rejected", "updated", "added"):
+        rs.pop(k, None)
+    status.save()
+    log.info("recipes from the Google Sheet (%s): %d product(s), %d with a "
+             "problem -> %s", source, len(cfg["products"]), len(skipped), local)
+    for item in skipped:
+        log.warning("product %r not taken from the sheet (%s): %s", item["sheet"],
+                    "previous recipe kept" if item["kept_previous"] else "left out",
+                    "; ".join(item["problems"]))
+    return True
+
+
 # -------------------------------------------------------------------- code
 
 def systemctl(*args):
@@ -429,6 +576,7 @@ def main(argv=None):
     ap.add_argument("--repo", default=HERE)
     ap.add_argument("--state-dir", default=STATE_DIR)
     ap.add_argument("--data-dir", default=DATA_DIR)
+    ap.add_argument("--config-dir", default=CONFIG_DIR)
     ap.add_argument("--version", action="version",
                     version=f"MINCECRAFT updater {FW_VERSION}")
     args = ap.parse_args(argv)
@@ -455,25 +603,39 @@ def main(argv=None):
         return mark_good(repo, status)
     if args.rollback:
         return rollback(repo, status)
+    url = sheet_url(args.config_dir)
     if args.recipes:
-        sync_recipes(repo, status, args.data_dir)
+        if url:
+            sync_from_sheet(args.repo, status, args.data_dir, url)
+        else:
+            sync_recipes(repo, status, args.data_dir)
         return 0
     # --boot: one fetch for both. Offline is normal at boot (Wi-Fi still
     # coming up): start with what is there, the timer catches up later.
+    changed = False
     try:
         repo.fetch()
+        fetched = True
     except GitError as e:
-        why = f"could not reach GitHub ({e}) — nothing changed"
+        fetched = False
+        why = f"could not reach GitHub ({e}) — code unchanged"
         status.code["last_error"] = why
-        status.code["checked_at"] = status.recipes["checked_at"] = now_iso()
-        status.recipes["online"] = False
-        status.recipes["last_error"] = why
+        status.code["checked_at"] = now_iso()
         status.save()
         log.warning(why)
-        return 0
-    status.recipes["online"] = True
-    changed = update_code(repo, status, fetch=False)
-    sync_recipes(repo, status, args.data_dir, fetch=False)
+    if fetched:
+        changed = update_code(repo, status, fetch=False)
+    if url:
+        # The sheet is a different site from GitHub: try it either way. After
+        # a code update the merge uses the new code's recipes.json.
+        sync_from_sheet(args.repo, status, args.data_dir, url)
+    elif fetched:
+        status.recipes["online"] = True
+        sync_recipes(repo, status, args.data_dir, fetch=False)
+    else:
+        status.recipes.update({"online": False, "checked_at": now_iso(),
+                               "last_error": status.code["last_error"]})
+        status.save()
     return CHANGED if changed else 0
 
 
