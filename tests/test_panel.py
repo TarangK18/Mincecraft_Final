@@ -272,14 +272,23 @@ def main():
             shot_under = True
         sim.add(target * 0.5)
         if not shot_ok:
-            pump(app, 1.0)
-            check("in tolerance — panel counts down to auto-accept",
-                  "hold steady" in add.guide.text() or "OK" in add.guide.text())
+            settle(app, state)
+            pump(app, 3.0)          # longer than the old 2 s auto-accept
+            check("in tolerance and steady — the panel waits for NEXT (no auto-advance)",
+                  win.current == "ADD" and win.st.idx == i
+                  and win.st.steps[i].actual is None)
+            check("and says to press NEXT, with NEXT armed",
+                  add.guide.text().startswith("OK — press NEXT")
+                  and add.next_btn.isEnabled())
             shot(win, "07-in-tolerance.png")
             shot_ok = True
         end = time.time() + 15
         while time.time() < end and win.current == "ADD" and win.st.idx == i:
             pump(app, 0.1)
+            _add = win.screens["ADD"]
+            if (win.current == "ADD" and _add.next_btn.isEnabled()
+                    and _add.guide.text().startswith("OK — press NEXT")):
+                _add.next_btn.click()      # the operator presses NEXT (v1.4)
 
     # ------------------------------------------------ papain, by meat, last
     end = time.time() + 5
@@ -303,6 +312,10 @@ def main():
         end = time.time() + 15
         while time.time() < end and win.current == "ADD":
             pump(app, 0.1)
+            _add = win.screens["ADD"]
+            if (win.current == "ADD" and _add.next_btn.isEnabled()
+                    and _add.guide.text().startswith("OK — press NEXT")):
+                _add.next_btn.click()      # the operator presses NEXT (v1.4)
     elif win.current == "MANUAL":
         sim.add(pap.target)
         settle(app, state)
@@ -520,10 +533,8 @@ def main():
     add2 = win.screens["ADD"]
     check("FILL TO TARGET lands inside tolerance",
           abs(sim.reading() - 576.0) <= cfg.tol_of(576.0))
-    # It may already have auto-advanced by the time we look, which is itself
-    # the panel agreeing.
-    check("and the panel agrees it is in tolerance",
-          "OK" in add2.guide.text() or win.st.steps[0].actual is not None)
+    check("and the panel agrees it is in tolerance, waiting for NEXT",
+          "OK" in add2.guide.text() and win.st.steps[0].actual is None)
     check("the rig shows how far from target it is",
           "to go" in win.sim_readout.text())
     shot(win, "18-sim-rig.png")

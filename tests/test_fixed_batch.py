@@ -3,7 +3,7 @@
 
 Piri Piri Masala: no meat, no weighing step, exactly the grams in the recipe.
 The whole batch is run the way an operator would — floor-scale ingredients
-poured until the panel auto-accepts, citric acid confirmed from the bench —
+poured until in tolerance and NEXT pressed, citric acid confirmed from the bench —
 and the batch record is read back from the log.
 
 The tub is deliberately NOT zeroed (it reads 850 g) to prove the end-of-batch
@@ -151,6 +151,10 @@ def main():
         end = time.time() + 15
         while time.time() < end and win.current == "ADD" and win.st.idx == i:
             pump(app, 0.1)
+            _add = win.screens["ADD"]
+            if (win.current == "ADD" and _add.next_btn.isEnabled()
+                    and _add.guide.text().startswith("OK — press NEXT")):
+                _add.next_btn.click()      # the operator presses NEXT (v1.4)
 
     check("all ten ingredients done and the batch is complete",
           win.current == "DONE")

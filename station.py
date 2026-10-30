@@ -2,7 +2,7 @@
 """
 DOKI weighing station (MINCECRAFT) — entry point.
 
-THIS VERSION: v1.3 (2026-10-28)
+THIS VERSION: v1.4 (2026-10-29)
 
 What it does now, as a whole:
   - Reads the main scale (RS232, 9600 8N1, /dev/ttyUSB0) on its own thread;
@@ -10,7 +10,9 @@ What it does now, as a whole:
   - Runs one batch at a time on the 7-inch touchscreen: pick the product,
     weigh the meat (or type its weight behind the supervisor PIN), swap to the
     empty ingredient container, review every target, weigh each ingredient
-    with auto-advance in tolerance, papain last by meat type for jerky.
+    — NEXT arms when the weight is in tolerance and the step ends only when
+    the operator presses it (never by itself) — papain last by meat type
+    for jerky.
     Piri Piri Masala is a fixed batch with no meat.
   - Recipes: starts with the recipes synced from the owner's Google Sheet
     (~/.local/share/mincecraft/recipes.json, written by updater.py) if that
@@ -46,6 +48,11 @@ What it does now, as a whole:
   python3 station.py --port /dev/ttyUSB1
 
 CHANGES (newest first)
+  v1.4  2026-10-29  Auto-advance removed: an ingredient in tolerance no
+                    longer moves on after 2 s steady; the operator presses
+                    NEXT. The guide says "OK — press NEXT" (or "stop adding,
+                    then press NEXT" while the weight is moving).
+                    Why: Tarang — only go next when the operator clicks NEXT.
   v1.3  2026-10-28  The dead "Recipe editor" menu button is now "Recipes":
                     a button per recipe that opens the full recipe, a
                     one-line source note, and SYNC NOW (needs updater.py
@@ -83,7 +90,7 @@ from scale import (LOCAL_RECIPES, UPDATE_STATUS, BatchLog, Config, DailyRatio,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-FW_VERSION = "v1.3"
+FW_VERSION = "v1.4"
 
 
 def main(argv=None):

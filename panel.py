@@ -34,7 +34,6 @@ AMBER  = "#e8b339"
 RED    = "#e05d5d"
 TRACK  = "#1b2530"
 
-HOLD_TO_ACCEPT_S = 2.0     # in tolerance and stable this long -> auto-advance
 DESIGN_W, DESIGN_H = 1024, 600
 
 # The panel is drawn at 1024x600 and multiplied to fit the real display.
@@ -1084,13 +1083,11 @@ class AddScreen(Screen):
                         (button("SKIP (PIN)", "ghost", self.panel.skip_step), 1),
                         (self.next_btn, 0))
 
-        self.ok_since = None
         self.over_prompted = False
 
     def enter(self):
         st, cfg = self.st, self.cfg
         s = st.steps[st.idx]
-        self.ok_since = None
         self.over_prompted = False
         self.step_no.setText(f"Ingredient {st.idx + 1} of {len(st.steps)}")
         self.ing_name.setText(s.name)
@@ -1119,7 +1116,6 @@ class AddScreen(Screen):
         if not live:
             self.set_tone("dead", "Scale not reporting — hold.")
             self.next_btn.setEnabled(False)
-            self.ok_since = None
             self.big.setText(f"— / {fmt_g(s.target)} g")
             return
 
@@ -1135,25 +1131,19 @@ class AddScreen(Screen):
             self.bar.set_values(added, s.target, tol, "under")
             self.set_tone("under", f"Add {s.target - added:.0f} g more…")
             self.next_btn.setEnabled(False)
-            self.ok_since = None
         elif added <= s.target + tol:
+            # In tolerance. The station never moves on by itself (v1.4): the
+            # operator presses NEXT, so a pause mid-pour can't end the step.
             self.bar.set_values(added, s.target, tol, "ok")
             self.next_btn.setEnabled(True)
             if snap["stable"]:
-                if self.ok_since is None:
-                    self.ok_since = time.monotonic()
-                left = HOLD_TO_ACCEPT_S - (time.monotonic() - self.ok_since)
-                self.set_tone("ok", f"OK — hold steady… {left:.1f} s" if left > 0 else "OK")
-                if left <= 0:
-                    self.panel.accept_step()
+                self.set_tone("ok", "OK — press NEXT ▶")
             else:
-                self.ok_since = None
-                self.set_tone("ok", "OK — stop adding to confirm")
+                self.set_tone("ok", "OK — stop adding, then press NEXT ▶")
         else:
             self.bar.set_values(added, s.target, tol, "over")
             self.set_tone("over", f"Over by {added - s.target:.0f} g — scoop some out")
             self.next_btn.setEnabled(False)
-            self.ok_since = None
             if added > s.target + tol * 3 and snap["stable"] and not self.over_prompted:
                 self.over_prompted = True
                 self.panel.over_target(added)

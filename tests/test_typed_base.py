@@ -227,6 +227,10 @@ def main():
         end = time.time() + 15
         while time.time() < end and win.current == "ADD" and win.st.idx == i:
             pump(app, 0.1)
+            _add = win.screens["ADD"]
+            if (win.current == "ADD" and _add.next_btn.isEnabled()
+                    and _add.guide.text().startswith("OK — press NEXT")):
+                _add.next_btn.click()      # the operator presses NEXT (v1.4)
     check("every ingredient in, then the meat question", win.current == "MEAT")
     win.screens["MEAT"].buttons["buffalo"].click()
     pump(app, 0.4)
@@ -237,6 +241,10 @@ def main():
     end = time.time() + 15
     while time.time() < end and win.current == "ADD":
         pump(app, 0.1)
+        _add = win.screens["ADD"]
+        if (win.current == "ADD" and _add.next_btn.isEnabled()
+                and _add.guide.text().startswith("OK — press NEXT")):
+            _add.next_btn.click()      # the operator presses NEXT (v1.4)
     check("batch complete", win.current == "DONE")
 
     rec = last_record()

@@ -17,7 +17,7 @@ Recipes come from the owner's **Google Sheet** and code updates from GitHub,
 both through **`updater.py`**, also a separate process — see "Recipes from the
 Google Sheet" and "Updates from GitHub" below.
 
-**Versions:** station `v1.3`, uploader `v1.0`, updater `v1.2` (headers at the
+**Versions:** station `v1.4`, uploader `v1.0`, updater `v1.2` (headers at the
 top of `station.py`, `uploader.py`, `updater.py`; the station's version is in
 the status bar and every program prints its version at start).
 
@@ -97,7 +97,7 @@ for free. For a console-only boot with no desktop, run it under
 | `run-demo.bat` / `run-demo.sh` | one-click demo launcher (Windows / Linux) |
 | `daily.json` | the day's water ratio (created when a supervisor sets it) |
 | `tests/test_scale.py` | 105 tests, incl. a virtual serial port, the entry point, and the workbook round trip |
-| `tests/test_panel.py` | 100-check headless walkthrough of a whole batch |
+| `tests/test_panel.py` | 101-check headless walkthrough of a whole batch |
 | `tests/test_fake_scale.py` | 10 tests driving the real reader over a virtual port |
 | `tests/test_layout.py` | 35 checks that every screen fits, from 800×480 to 1920×1080, and text stays ≥ 15 px |
 | `tests/test_fixed_batch.py` | 23 checks: a whole Piri Piri Masala batch through the real panel |
@@ -335,8 +335,9 @@ rather than letting it fail at recipe review.
 
 Each ingredient step takes a **software tare** at the moment it opens, so the
 operator adds cumulatively into one container and the panel shows only what
-the current ingredient has contributed. In tolerance and stable for 2 s
-auto-advances. Over target offers scoop-out, rebalancing the remaining
+the current ingredient has contributed. In tolerance arms **NEXT**; the step
+ends only when the operator presses it — the station never moves on by itself
+(no auto-advance since v1.4). Over target offers scoop-out, rebalancing the remaining
 ingredients, or a PIN'd supervisor accept. A drop of more than
 `drop_alarm_g` below the step's tare raises the container-removed alarm, and
 RESUME only arms once the weight is actually back — the panel does not take
@@ -389,7 +390,7 @@ overscan**: the Pi draws the full frame and the monitor cuts the edges. Set
 
 ```bash
 python3 tests/test_scale.py                              # 105 tests
-QT_QPA_PLATFORM=offscreen python3 tests/test_panel.py    # 100 checks + screenshots
+QT_QPA_PLATFORM=offscreen python3 tests/test_panel.py    # 101 checks + screenshots
 python3 tests/test_fake_scale.py                         # 10 over a virtual port
 QT_QPA_PLATFORM=offscreen python3 tests/test_layout.py   # 35 — fits, and text ≥ 15 px
 QT_QPA_PLATFORM=offscreen python3 tests/test_fixed_batch.py  # 23 — Piri Piri Masala end to end
